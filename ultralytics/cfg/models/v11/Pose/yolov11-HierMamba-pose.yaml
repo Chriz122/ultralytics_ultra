@@ -1,0 +1,81 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# YOLO11-pose keypoints/pose estimation model. For Usage examples see https://docs.ultralytics.com/tasks/pose
+
+# Parameters
+nc: 80 # number of classes
+kpt_shape: [17, 3] # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
+scales: # model compound scaling constants, i.e. 'model=yolo11n-pose.yaml' will call yolo11.yaml with scale 'n'
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024, 0] # summary: 344 layers, 2908507 parameters, 2908491 gradients, 7.7 GFLOPs
+  s: [0.50, 0.50, 1024, 0] # summary: 344 layers, 9948811 parameters, 9948795 gradients, 23.5 GFLOPs
+  m: [0.50, 1.00, 512, 0] # summary: 434 layers, 20973273 parameters, 20973257 gradients, 72.3 GFLOPs
+  l: [1.00, 1.00, 512, 0] # summary: 656 layers, 26230745 parameters, 26230729 gradients, 91.4 GFLOPs
+  x: [1.00, 1.50, 512, 0] # summary: 656 layers, 58889881 parameters, 58889865 gradients, 204.3 GFLOPs
+
+# Depth unrolled explicitly to keep from-indices aligned
+backbone:
+  - [-1, 1, Conv, [64, 6, 2, 2]]           # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]             # 1-P2/4
+  - [-1, 1, IRDCB, [128]]                  # 2
+  - [-1, 1, IRDCB, [128]]                  # 3
+  - [-1, 1, IRDCB, [128]]                  # 4
+  - [-1, 1, Conv, [256, 3, 2]]             # 5-P3/8
+  - [-1, 1, MambaNeXt, [256]]              # 6
+  - [-1, 1, MambaNeXt, [256]]              # 7
+  - [-1, 1, MambaNeXt, [256]]              # 8
+  - [-1, 1, MambaNeXt, [256]]              # 9
+  - [-1, 1, MambaNeXt, [256]]              # 10
+  - [-1, 1, MambaNeXt, [256]]              # 11
+  - [-1, 1, Conv, [512, 3, 2]]             # 12-P4/16
+  - [-1, 1, IRDCB, [512]]                  # 13
+  - [-1, 1, IRDCB, [512]]                  # 14
+  - [-1, 1, IRDCB, [512]]                  # 15
+  - [-1, 1, IRDCB, [512]]                  # 16
+  - [-1, 1, IRDCB, [512]]                  # 17
+  - [-1, 1, IRDCB, [512]]                  # 18
+  - [-1, 1, Conv, [1024, 3, 2]]            # 19-P5/32
+  - [-1, 1, MambaNeXt, [1024]]             # 20
+  - [-1, 1, MambaNeXt, [1024]]             # 21
+  - [-1, 1, MambaNeXt, [1024]]             # 22
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]     # 23
+  - [[-1, 18], 1, Concat, [1]]                     # 24 concat P5->P4
+  - [-1, 1, Conv, [512, 1, 1]]                     # 25 reduce 1536->512
+  - [-1, 1, IRDCB, [512]]                          # 26
+  - [-1, 1, IRDCB, [512]]                          # 27
+  - [-1, 1, IRDCB, [512]]                          # 28
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]     # 29
+  - [[-1, 11], 1, Concat, [1]]                     # 30 concat with P3 backbone
+  - [-1, 1, Conv, [256, 1, 1]]                     # 31 reduce 768->256
+  - [-1, 1, IRDCB, [256]]                          # 32
+  - [-1, 1, IRDCB, [256]]                          # 33
+  - [-1, 1, IRDCB, [256]]                          # 34
+
+  - [-1, 1, Conv, [256, 3, 2]]                     # 35 downsample to P4 stride
+  - [[-1, 27], 1, Concat, [1]]                     # 36 fuse with earlier P4
+  - [-1, 1, Conv, [512, 1, 1]]                     # 37 reduce 768->512
+  - [-1, 1, IRDCB, [512]]                          # 38
+  - [-1, 1, IRDCB, [512]]                          # 39
+  - [-1, 1, IRDCB, [512]]                          # 40
+
+  - [-1, 1, Conv, [512, 3, 2]]                     # 41 downsample to P5 stride
+  - [[-1, 22], 1, Concat, [1]]                     # 42 fuse with deepest P5
+  - [-1, 1, Conv, [1024, 1, 1]]                    # 43 reduce 1536->1024
+  - [-1, 1, IRDCB, [1024]]                         # 44
+  - [-1, 1, IRDCB, [1024]]                         # 45
+  - [-1, 1, IRDCB, [1024]]                         # 46
+
+  - [-1, 1, nn.Upsample, [None, 4, 'nearest']]     # 47 upsample back to P3 stride (20->80)
+  - [[-1, 32], 1, Concat, [1]]                     # 48 fuse with P3 features for P2
+  - [-1, 1, Conv, [256, 1, 1]]                     # 49 reduce 1280->256
+  - [-1, 1, IRDCB, [256]]                          # 50
+  - [-1, 1, IRDCB, [256]]                          # 51
+  - [-1, 1, IRDCB, [256]]                          # 52 (unused, was P3-fused)
+
+  # True P2 (stride 4) from layer 1
+  - [1, 1, Conv, [256, 1, 1]]                     # 53 reduce 128->256
+  - [-1, 1, IRDCB, [256]]                          # 54 P2 (stride 4)
+  
+  - [[54, 34, 40, 46], 1, Pose, [nc, kpt_shape]]            # 55 P2(4), P3(8), P4(16), P5(32)

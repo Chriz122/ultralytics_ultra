@@ -1,0 +1,258 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# Global configuration YAML with settings and hyperparameters for YOLO training, validation, prediction and export
+# For documentation see https://docs.ultralytics.com/usage/cfg/
+
+task: detect # (str) YOLO task, i.e. detect, segment, classify, pose, obb
+mode: train # (str) YOLO mode, i.e. train, val, predict, export, track, benchmark
+
+# Train settings -------------------------------------------------------------------------------------------------------
+model: # (str, optional) path to model file, i.e. yolov8n.pt or yolov8n.yaml
+data: # (str, optional) path to data file, i.e. coco8.yaml
+epochs: 100 # (int) number of epochs to train for
+time: # (float, optional) max hours to train; overrides epochs if set
+patience: 100 # (int) early stop after N epochs without val improvement
+batch: 16 # (int) batch size; use -1 for AutoBatch
+imgsz: 640 # (int | list) train/val use int (square); predict/export may use [h,w]
+save: True # (bool) save train checkpoints and predict results
+save_period: -1 # (int) save checkpoint every N epochs; disabled if < 1
+cache: False # (bool | str) cache images in RAM (True/'ram') or on 'disk' to speed dataloading; False disables
+device: # (int | str | list) device: 0 or [0,1,2,3] for CUDA, 'cpu'/'mps', or -1/[-1,-1] to auto-select idle GPUs
+workers: 8 # (int) dataloader workers (per RANK if DDP)
+project: # (str, optional) project name for results root
+name: # (str, optional) experiment name; results in 'project/name'
+exist_ok: False # (bool) overwrite existing 'project/name' if True
+pretrained: True # (bool | str) use pretrained weights (bool) or load weights from path (str)
+optimizer: MuSGD # (str) optimizer: MuSGD, SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, or auto
+verbose: True # (bool) print verbose logs during training/val
+seed: 0 # (int) random seed for reproducibility
+deterministic: True # (bool) enable deterministic ops; reproducible but may be slower
+single_cls: False # (bool) treat all classes as a single class
+rect: False # (bool) rectangular batches for train; rectangular batching for val when mode='val'
+cos_lr: False # (bool) cosine learning rate scheduler
+close_mosaic: 10 # (int) disable mosaic augmentation for final N epochs (0 to keep enabled)
+resume: False # (bool) resume training from last checkpoint in the run dir
+amp: True # (bool) Automatic Mixed Precision (AMP) training; True runs AMP capability check
+fraction: 1.0 # (float) fraction of training dataset to use (1.0 = all)
+profile: False # (bool) profile ONNX/TensorRT speeds during training for loggers
+freeze: # (int | list, optional) freeze first N layers (int) or specific layer indices (list)
+multi_scale: 0.0 # (float) multiscale training by varying image size
+compile: False # (bool | str) enable torch.compile() backend='inductor'; True="default", False=off, or "default|reduce-overhead|max-autotune-no-cudagraphs"
+
+# Segmentation
+overlap_mask: True # (bool) merge instance masks into one mask during training (segment only)
+mask_ratio: 4 # (int) mask downsample ratio (segment only)
+
+# Classification
+dropout: 0.0 # (float) dropout for classification head (classify only)
+
+# Val/Test settings ----------------------------------------------------------------------------------------------------
+val: True # (bool) run validation/testing during training
+split: val # (str) dataset split to evaluate: 'val', 'test' or 'train'
+save_json: False # (bool) save results to COCO JSON for external evaluation
+conf: # (float, optional) confidence threshold; defaults: predict=0.25, val=0.001
+iou: 0.7 # (float) IoU threshold used for NMS
+max_det: 300 # (int) maximum number of detections per image
+half: False # (bool) use half precision (FP16) if supported
+dnn: False # (bool) use OpenCV DNN for ONNX inference
+plots: True # (bool) save plots and images during train/val
+
+# Predict settings -----------------------------------------------------------------------------------------------------
+source: # (str, optional) path/dir/URL/stream for images or videos; e.g. 'ultralytics/assets' or '0' for webcam
+vid_stride: 1 # (int) read every Nth frame for video sources
+stream_buffer: False # (bool) True buffers all frames; False keeps the most recent frame for low-latency streams
+visualize: False # (bool) visualize model features (predict) or TP/FP/FN confusion (val)
+augment: False # (bool) apply test-time augmentation during prediction
+agnostic_nms: False # (bool) class-agnostic NMS
+weighted: False # (bool) weighted NMS
+cluster: False # (bool) cluster NMS (MoE optimized)
+sigma: 0.1 # (float) Gaussian sigma for Cluster-Weighted NMS
+iou_type: iou # (str) NMS IoU type (iou, diou, ciou)
+classes: # (int | list[int], optional) filter by class id(s), e.g. 0 or [0,2,3]
+retina_masks: False # (bool) use high-resolution segmentation masks (segment)
+embed: # (list[int], optional) return feature embeddings from given layer indices
+
+# Visualize settings ---------------------------------------------------------------------------------------------------
+show: False # (bool) show images/videos in a window if supported
+save_frames: False # (bool) save individual frames from video predictions
+save_txt: False # (bool) save results as .txt files (xywh format)
+save_conf: False # (bool) save confidence scores with results
+save_crop: False # (bool) save cropped prediction regions to files
+show_labels: True # (bool) draw class labels on images, e.g. 'person'
+show_conf: True # (bool) draw confidence values on images, e.g. '0.99'
+show_boxes: True # (bool) draw bounding boxes on images
+line_width: # (int, optional) line width of boxes; auto-scales with image size if not set
+
+# Export settings ------------------------------------------------------------------------------------------------------
+format: torchscript # (str) target format, e.g. torchscript|onnx|openvino|engine|coreml|saved_model|pb|tflite|edgetpu|tfjs|paddle|mnn|ncnn|imx|rknn|executorch
+keras: False # (bool) TF SavedModel only (format=saved_model); enable Keras layers during export
+optimize: False # (bool) TorchScript only; apply mobile optimizations to the scripted model
+int8: False # (bool) INT8/PTQ where supported (openvino, tflite, tfjs, engine, imx); needs calibration data/fraction
+dynamic: False # (bool) dynamic shapes for torchscript, onnx, openvino, engine; enable variable image sizes
+simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX before runtime conversion
+opset: # (int, optional) ONNX/engine only; opset version for export; leave unset to use a tested default
+workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4
+nms: False # (bool) fuse NMS into exported model when backend supports; if True, conf/iou apply (agnostic_nms except coreml)
+
+# Hyperparameters ------------------------------------------------------------------------------------------------------
+lr0: 0.01 # (float) initial learning rate (SGD=1e-2, Adam/AdamW=1e-3)
+lrf: 0.01 # (float) final LR fraction; final LR = lr0 * lrf
+momentum: 0.937 # (float) SGD momentum or Adam beta1
+weight_decay: 0.0005 # (float) weight decay (L2 regularization)
+warmup_epochs: 3.0 # (float) warmup epochs (fractions allowed)  default 3.0 
+warmup_momentum: 0.8 # (float) initial momentum during warmup
+warmup_bias_lr: 0.1 # (float) bias learning rate during warmup
+box: 7.5 # (float) box loss gain
+cls: 0.5 # (float) classification loss gain
+dfl: 1.5 # (float) distribution focal loss gain
+moe: 0.15 # (float) moe loss gain
+pose: 12.0 # (float) pose loss gain (pose tasks)
+kobj: 1.0 # (float) keypoint objectness loss gain (pose tasks)
+rle: 1.0 # (float) rle loss gain (pose tasks)
+angle: 1.0 # (float) oriented angle loss gain (obb tasks)
+nbs: 64 # (int) nominal batch size used for loss normalization
+hsv_h: 0.015 # (float) HSV hue augmentation fraction
+hsv_s: 0.7 # (float) HSV saturation augmentation fraction
+hsv_v: 0.4 # (float) HSV value (brightness) augmentation fraction
+degrees: 0.0 # (float) rotation degrees (+/-)
+translate: 0.1 # (float) translation fraction (+/-)
+scale: 0.5 # (float) scale gain (+/-)
+shear: 0.0 # (float) shear degrees (+/-)
+perspective: 0.0 # (float) perspective fraction (0–0.001 typical)
+flipud: 0.0 # (float) vertical flip probability
+fliplr: 0.5 # (float) horizontal flip probability
+bgr: 0.0 # (float) RGB↔BGR channel swap probability
+mosaic: 1.0 # (float) mosaic augmentation probability
+mixup: 0.0 # (float) MixUp augmentation probability
+cutmix: 0.0 # (float) CutMix augmentation probability
+copy_paste: 0.0 # (float) segmentation copy-paste probability
+copy_paste_mode: flip # (str) copy-paste strategy for segmentation: flip or mixup
+auto_augment: randaugment # (str) classification auto augmentation policy: randaugment, autoaugment, augmix
+erasing: 0.4 # (float) random erasing probability for classification (0–0.9), <1.0
+
+# Custom config.yaml ---------------------------------------------------------------------------------------------------
+cfg: # (str, optional) path to a config.yaml that overrides defaults
+
+# Tracker settings ------------------------------------------------------------------------------------------------------
+tracker: botsort.yaml # (str) tracker config file: botsort.yaml or bytetrack.yaml
+
+# LoRA settings ---------------------------------------------------------------------------------------------------------
+lora_r: 0 # (int) LoRA rank (0 to disable)
+lora_alpha: 32 # (int) LoRA alpha (recommended: 2 * r)
+lora_dropout: 0.05 # (float) LoRA dropout
+lora_bias: "none" # (str) LoRA bias type: "none", "all", "lora_only"
+lora_backend: "auto" # (str) LoRA backend: "auto", "peft", "fallback"
+lora_variant: "lora" # (str) Adapter variant: "lora", "loha", "dora"
+lora_include_head: False # (bool) Include YOLO detection head layers in LoRA targeting
+lora_freeze_bn: False # (bool) Freeze BatchNorm layers during LoRA training
+lora_target_modules: # (list[str], optional) LoRA target modules
+lora_save_adapters: True # (bool) Save LoRA adapters
+lora_adapter_dir: "lora_adapter" # (str) Directory name for adapters
+lora_auto_r_ratio: 0.0 # (float) Auto calculate LoRA rank based on params ratio
+lora_use_dora: False # (bool) Enable DoRA (Weight-Decomposed Low-Rank Adaptation)
+lora_allow_rtdetr_dora: False # (bool) Allow experimental RT-DETR + DoRA instead of auto-degrading to plain LoRA
+lora_use_rslora: True # (bool) Enable RS-LoRA scaling for better high-rank stability
+lora_init_lora_weights: True # (bool|str) LoRA init mode: True/False for standard init, or "gaussian". "pissa"/"olora" require newer PEFT.
+lora_type: "lora" # (str) PEFT type: "lora", "loha", "lokr", "adalora", "ia3", "oft", "boft", "hra"
+lora_quantization: "none" # (str) Quantization type: "none", "4bit", "8bit" (Requires bitsandbytes)
+lora_include_moe: False # (bool) Include MoE layers in auto-detection
+lora_include_attention: False # (bool) Include Attention layers in auto-detection
+lora_only_backbone: False # (bool) Only apply LoRA to backbone
+lora_only_3x3: False # (bool) Skip 1x1 convs during auto target detection
+lora_exclude_modules: # (list[str], optional) Modules to exclude
+lora_last_n: # (int, optional) Only apply to last N layers
+lora_from_layer: # (int, optional) Start applying from layer index
+lora_to_layer: # (int, optional) Stop applying at layer index
+lora_allow_depthwise: False # (bool) Allow depthwise convolution
+lora_kernels: # (list[int], optional) Filter by kernel size
+lora_skip_stem: False # (bool) Skip the first three top-level backbone layers (stem); recommended for transfer learning
+lora_min_channels: 0 # (int) Skip layers whose min(in_channels, out_channels) < this value (0 disables; try 32 to keep LoRA genuinely low-rank)
+lora_gradient_checkpointing: True # (bool) Enable gradient checkpointing for LoRA memory optimization
+lora_lr_mult: 2.0 # (float) Learning rate multiplier for LoRA params vs base (2.0 recommended)
+lora_target_r: 8 # (int) AdaLoRA target rank after allocation
+lora_init_r: 12 # (int) AdaLoRA initial rank before pruning
+lora_tinit: 0 # (int) AdaLoRA warmup steps before rank allocation starts
+lora_tfinal: 0 # (int) AdaLoRA final fine-tuning steps after rank allocation ends
+lora_delta_t: 1 # (int) AdaLoRA rank allocation interval in steps
+lora_beta1: 0.85 # (float) AdaLoRA EMA beta1 for sensitivity tracking
+lora_beta2: 0.85 # (float) AdaLoRA EMA beta2 for uncertainty tracking
+lora_orth_reg_weight: 0.5 # (float) AdaLoRA orthogonal regularization weight
+lora_total_step: 0 # (int) AdaLoRA total training steps; 0 lets trainer auto-resolve from iterations
+
+# OFT / BOFT / HRA specific (only used when lora_type=oft, boft, or hra)
+lora_oft_block_size: 0 # (int) OFT block size (>0 overrides rank r)
+lora_oft_coft: False # (bool) OFT: use constrained Cayley-Neumann rotation
+lora_oft_eps: 6.0e-5 # (float) OFT numerical eps
+lora_oft_block_share: False # (bool) OFT: share rotation across blocks
+lora_boft_block_size: 2 # (int) BOFT butterfly block size (must divide kernel dim; use 1/2 for YOLO 3x3 Conv)
+lora_boft_block_num: 0 # (int) BOFT number of blocks (0 = auto from block_size)
+lora_boft_n_butterfly_factor: 2 # (int) BOFT butterfly factor (paper default)
+lora_hra_apply_gs: False # (bool) HRA: apply Gram-Schmidt orthogonalization
+
+# LoRA Training Strategies (advanced)
+lora_layer_decay: 0.0 # (float) Layer-wise LR decay rate (0=disabled, 0.85~0.95 typical)
+lora_alpha_warmup: 0 # (int) Alpha cosine warmup epochs (0=disabled)
+lora_ortho_weight: 0.0 # (float) Orthogonal regularization weight (0=disabled, 1e-5~1e-3 typical)
+lora_ortho_frequency: 10 # (int) Compute orthogonal loss every N batches (1=every batch, 10=every 10 batches)
+lora_dropout_end: 0.15 # (float) Final dropout for dynamic schedule (must be >= lora_dropout)
+lora_dropout_start_ratio: 0.3 # (float) When to start increasing dropout (fraction of total epochs)
+
+# Few-Shot LoRA settings -----------------------------------------------------------------------------------------------
+lora_few_shot_mode: False # (bool) Enable few-shot LoRA with enhanced regularization for small datasets
+lora_few_shot_teacher: # (str, optional) Path to teacher model for knowledge distillation
+lora_few_shot_dropconnect: 0.1 # (float) DropConnect rate for few-shot LoRA (better than dropout for limited data)
+lora_few_shot_distill_weight: 0.5 # (float) Weight for distillation loss when teacher is provided
+lora_few_shot_adaptive_rank: True # (bool) Auto-adjust rank based on data scarcity in few-shot mode
+# Few-Shot LoRA: scheduling and advanced regularization
+lora_few_shot_dropconnect_schedule: "cosine" # (str) DropConnect schedule: constant/linear/cosine/exponential
+lora_few_shot_dropconnect_max: 0.3 # (float) Initial max DropConnect rate (for scheduled modes)
+lora_few_shot_dropconnect_min: 0.0 # (float) Final min DropConnect rate (for scheduled modes)
+lora_few_shot_gradient_importance_weighted: False # (bool) Use gradient-importance weighted DropConnect
+lora_few_shot_hierarchical_distill: False # (bool) Enable multi-layer hierarchical distillation
+lora_few_shot_distill_layers: # (list, optional) Layer indices for intermediate distillation e.g. [10, 13, 16]
+lora_few_shot_variational_rank: False # (bool) Enable variational rank selection (Gumbel-Softmax)
+lora_few_shot_rank_budget: 0.5 # (float) Budget ratio for rank retention in variational mode
+lora_few_shot_adaptive_temperature: False # (bool) Enable task-adaptive distillation temperature
+lora_few_shot_curriculum_sampling: False # (bool) Enable curriculum learning sampler
+# Few-Shot LoRA: distillation scheduling and response-level transfer
+lora_few_shot_distill_schedule: "cosine" # (str) Distillation weight schedule: constant/linear/cosine
+lora_few_shot_distill_weight_max: 1.0 # (float) Initial max distillation weight
+lora_few_shot_distill_weight_min: 0.1 # (float) Final min distillation weight
+lora_few_shot_use_ema_teacher: False # (bool) Use EMA teacher for progressive self-distillation
+lora_few_shot_ema_decay: 0.999 # (float) EMA teacher decay rate
+lora_few_shot_response_distill: False # (bool) Enable detection head response distillation (cls + bbox)
+lora_few_shot_response_distill_weight: 0.3 # (float) Weight for response distillation loss
+lora_few_shot_layerwise_rank: False # (bool) Enable per-layer adaptive rank based on depth/channels
+lora_few_shot_hook_cache: True # (bool) Cache hierarchical distillation hooks across batches
+
+# MoE (Mixture-of-Experts) settings -----------------------------------------------------------------------------------------
+moe_num_experts: 4 # (int) Number of experts in MoE layers (0 to use model config)
+moe_top_k: 2 # (int) Number of experts to activate per token
+moe_balance_loss: 0.1 # (float) Load balancing loss coefficient for MoE (0.01 too low → routing collapse)
+moe_noise_std: 0.5 # (float) Noise std for MoE routing (1.0 too noisy after warmup)
+moe_temperature: 1.0 # (float) Temperature for MoE routing logits
+moe_router_z_loss: 0.01 # (float) Router z-loss coefficient (1e-3 too low for stability)
+moe_weight_threshold: 0.01 # (float) Weight threshold for conditional computation in MoE
+moe_expert_warmup_epochs: 3 # (int) Epochs to freeze experts while router learns (was 5, too long)
+moe_router_lr_scale: 0.5 # (float) Router LR as fraction of base LR (was 0.1, too small to correct collapse)
+moe_collapse_threshold: 0.8 # (float) If max expert usage > threshold, trigger collapse recovery
+
+# AFSS Settings -----------------------------------------------------------------------------------------
+afss: False                         # 是否開啟 AFSS 動態抽樣
+afss_refresh_rate: 5                 # 狀態刷新機制 (每 N Epoch 執行一次)
+afss_easy_thresh: 0.85               # Easy 樣本的學習充分度閾值
+afss_hard_thresh: 0.55               # Hard 樣本的學習充分度閾值
+afss_easy_ratio: 0.02                # Easy 樣本每輪保留比例 0.02
+afss_easy_forced_gap: 10             # Easy 樣本超過 10 個 epoch 未使用則強制回看
+afss_moderate_forced_gap: 3          # Moderate 樣本超過 3 個 epoch 未使用則強制回看
+afss_moderate_forced_ratio: 0.4      # Moderate 樣本每輪保留比例 0.4
+
+# IoU Settings -----------------------------------------------------------------------------------------
+iou_type: CIoU       # 選項: IoU, GIoU, DIoU, CIoU, EIoU, SIoU, WIoU, ShapeIoU, PIoU, PIoU2, mpdiou
+Inner: False         # 是否使用 Inner-IoU
+Focaleriou: False    # 是否使用 Focaler-IoU
+d: 0.00              # Focaler-IoU 參數 d
+u: 0.95              # Focaler-IoU 參數 u
+ratio: 1.15          # Inner-IoU 參數 ratio
+Lambda: 1.3          # PIoU2 參數 Lambda
+scale: 0.0           # ShapeIoU 參數 scale

@@ -1997,6 +1997,7 @@ class BaseTrainer:
                     "imgsz",
                     "batch",
                     "device",
+                    "epochs",
                     "close_mosaic",
                     "augmentations",
                     "save_period",

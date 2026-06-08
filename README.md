@@ -4,10 +4,21 @@
 
 支援版本
 - 建議: `ultralytics==8.4.6`
-- 安裝補充相依套件：
+-- 安裝補充相依套件（擇一）：
   ```powershell
-  pip install -r ultralytics-8.4.6.17.118-py3-none-any.whl
+  # 選項 A：安裝專案附帶的 wheel
+  pip install ultralytics-8.4.6.17.119-py3-none-any.whl
+
+  # 選項 B：使用本專案的 requirements 清單安裝所有相依套件
+  pip install -r requirement.txt
   ```
+  
+  > [!IMPORTANT]
+  > - `pytorch`、`torchvision`、`torchaudio` 請務必依你使用的 Python 版本與硬體（CUDA 或 CPU）選擇對應的套件版本。
+  > - 請參考官方安裝說明來產生正確的安裝指令： https://pytorch.org/get-started/locally/
+  > - 範例（僅示意；請以官方產出的指令為準）：
+  >   - CPU-only：`pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
+  >   - CUDA 11.8：`pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118`
   
 此專案提供經過整理與擴充的 ultralytics 模型設定與範例，方便用於本機開發或替換 site-packages 中的 ultralytics 套件設定。
 

@@ -7,10 +7,10 @@
 -- 安裝補充相依套件（擇一）：
   ```powershell
   # 選項 A：安裝專案附帶的 wheel
-  pip install ultralytics-8.4.6.17.119-py3-none-any.whl
+  pip install Install_Dependencies\ultralytics-8.4.6.17.119-py3-none-any.whl
 
   # 選項 B：使用本專案的 requirements 清單安裝所有相依套件
-  pip install -r requirement.txt
+  pip install -r Install_Dependencies\requirement.txt
   ```
   
   > [!IMPORTANT]
@@ -19,6 +19,7 @@
   > - 範例（僅示意；請以官方產出的指令為準）：
   >   - CPU-only：`pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
   >   - CUDA 11.8：`pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118`
+  > - 版本建議 : Python 3.11、CUDA 12.8、PyTorch 2.8.0
   
 此專案提供經過整理與擴充的 ultralytics 模型設定與範例，方便用於本機開發或替換 site-packages 中的 ultralytics 套件設定。
 

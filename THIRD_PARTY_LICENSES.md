@@ -200,7 +200,11 @@ Copyright (C) 2023 Ultralytics Inc.
 - **說明**: 混合專家模型 (MoE)深度整合到 YOLO 架構中
 
 ### Vajrav1
-- **授權**: AGPL-3.0
-- **作者**: Naman Makkar
 - **來源**: https://github.com/NamanMakkar/VayuAI
 - **授權**: AGPL-3.0
+- **作者**: Naman Makkar
+
+### mamba
+- **來源**: https://github.com/state-spaces/mamba
+- **授權**: Apache-2.0 license
+- **作者**: Tri Dao, Albert Gu

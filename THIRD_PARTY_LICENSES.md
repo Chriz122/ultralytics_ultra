@@ -208,3 +208,8 @@ Copyright (C) 2023 Ultralytics Inc.
 - **來源**: https://github.com/state-spaces/mamba
 - **授權**: Apache-2.0 license
 - **作者**: Tri Dao, Albert Gu
+
+### CPUBone
+- **來源**: https://github.com/altair199797/CPUBone
+- **授權**: Apache-2.0 license
+- **作者**: Moritz Nottebaum

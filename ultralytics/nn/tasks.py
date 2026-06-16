@@ -423,6 +423,8 @@ from ultralytics.nn.modules import (
     TTTC2f_AttnRes,
     HybridA2C2f_TTT_AttnRes,
     C3k2_AttnRes,
+    HybridA2C2f_TTT, 
+    TTTC2f,
     MSCAM, 
     MSCAMv2, 
     MSCAMv3, 
@@ -1010,6 +1012,18 @@ from ultralytics.nn.modules import (
     h_vittt_tiny, 
     h_vittt_small, 
     h_vittt_base,
+    cpubone_nano, 
+    cpubone_t0, 
+    cpubone_s0, 
+    cpubone_s1, 
+    cpubone_b0, 
+    cpubone_b1, 
+    cpubone_b15, 
+    cpubone_b2, 
+    cpubone_b25, 
+    cpubone_b3, 
+    cpubone_b4, 
+    cpubone_b5,
     tinyvim_s, 
     tinyvim_b, 
     tinyvim_l,
@@ -1125,6 +1139,12 @@ from ultralytics.nn.modules import (
     ViT5Block,
     FreqFusion,
     FdamBlock,
+    AttnResDetect, 
+    AttnResSegment, 
+    AttnResOBB, 
+    AttnResPose,
+    BlockAttnResMerge,
+    C2f_FullAttnRes,
     
     PatchEmbed_Faster, 
     PatchMerging_Faster,
@@ -1431,7 +1451,7 @@ class BaseModel(torch.nn.Module):
                     m.forward = m.forward_fuse
                 if isinstance(m, (RepDWConvS, RepDWConvM, ConvNorm)):
                     m.fuse()
-                if isinstance(m, Detect) and getattr(m, "end2end", False):
+                if isinstance(m, (Detect, AttnResDetect)) and getattr(m, "end2end", False):
                     m.fuse()  # remove one2many head
             self.info(verbose=verbose)
 
@@ -1471,7 +1491,7 @@ class BaseModel(torch.nn.Module):
         self = super()._apply(fn)
         m = self.model[-1]  # Detect()
         if isinstance(
-            m, (Detect, MAFDetect, IDetect)
+            m, (Detect, MAFDetect, IDetect, AttnResDetect)
         ):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect, YOLOEDetect, YOLOESegment
             m.stride = fn(m.stride)
             m.anchors = fn(m.anchors)
@@ -1579,7 +1599,7 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, MAFDetect, IDetect)):  # includes all Detect subclasses like Segment, Pose, OBB, YOLOEDetect, YOLOESegment
+        if isinstance(m, (Detect, MAFDetect, IDetect, AttnResDetect)):  # includes all Detect subclasses like Segment, Pose, OBB, YOLOEDetect, YOLOESegment
             s = 256  # 2x min stride
             m.inplace = self.inplace
 
@@ -3038,6 +3058,8 @@ def parse_model(d, ch, verbose=True):
             TTTC2f_AttnRes,
             HybridA2C2f_TTT_AttnRes,
             C3k2_AttnRes,
+            HybridA2C2f_TTT, 
+            TTTC2f,
             LDConv,
             C2PSA_HV_LCA,
             C2PSA_HV_LCA_DynamicTanh,
@@ -3084,6 +3106,7 @@ def parse_model(d, ch, verbose=True):
             C2f_Strip,
             ViT5Block,
             FdamBlock,
+            C2f_FullAttnRes,
             
             PatchEmbed_Faster, 
             PatchMerging_Faster,
@@ -3252,6 +3275,8 @@ def parse_model(d, ch, verbose=True):
             TTTC2f_AttnRes,
             HybridA2C2f_TTT_AttnRes,
             C3k2_AttnRes,
+            HybridA2C2f_TTT, 
+            TTTC2f,
             C2PSA_HV_LCA, 
             C2PSA_HV_LCA_DynamicTanh,
             C2f_MultiOGA, 
@@ -3272,6 +3297,7 @@ def parse_model(d, ch, verbose=True):
             C3k2PCA,
             C2f_Strip,
             ViT5Block,
+            C2f_FullAttnRes,
             
             ParCBlock,
             vHeatStage,
@@ -3311,7 +3337,8 @@ def parse_model(d, ch, verbose=True):
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
-            if m in {A2C2f, LaSt_A2C2f, A2C2f_5, A2C2f_5_RoPEMixed, A2C2f_5_AttnRes, A2C2f_5_RoPEMixed_AttnRes, A2C2f_AttnRes, TTTC2f_AttnRes, HybridA2C2f_TTT_AttnRes}:
+            if m in {A2C2f, LaSt_A2C2f, A2C2f_5, A2C2f_5_RoPEMixed, A2C2f_5_AttnRes, A2C2f_5_RoPEMixed_AttnRes, A2C2f_AttnRes, TTTC2f_AttnRes, HybridA2C2f_TTT_AttnRes,
+                     HybridA2C2f_TTT, TTTC2f}:
                 legacy = False
                 if scale in "lx":  # for L/X sizes
                     args.extend((True, 1.2))
@@ -3351,6 +3378,12 @@ def parse_model(d, ch, verbose=True):
             c2 = ch[f]
         elif m in (Concat, SimFusion_4in, AdvPoolFusion, Concat_BiFPN, LCA_Concat, LCA_DynamicTanh_Concat, MyConcat4, MyConcat6):
             c2 = sum(ch[x] for x in f)
+        elif m is BlockAttnResMerge:
+            # 1. 計算該模塊的輸出通道數 (以第一個輸入分支 f[0] 的通道數為基準)
+            c2 = ch[f[0]] 
+            # 2. 獲取所有輸入分支的通道數列表，並將其放入 args 中，
+            #    這樣 m(*args) 實例化時就會傳入給 def __init__(self, ch):
+            args = [[ch[x] for x in f]]
         elif m is FreqFusion:
             # 獲取各個分支的通道數，例如 [1024, 512]
             c1 = [ch[x] for x in f]
@@ -3464,6 +3497,10 @@ def parse_model(d, ch, verbose=True):
                 MAFOBB, 
                 IOBB,
                 OBB26,
+                AttnResDetect, 
+                AttnResSegment, 
+                AttnResOBB, 
+                AttnResPose,
             }
         ):
             args.extend([reg_max, end2end, rtmo, rlepose, [ch[x] for x in f]])
@@ -3472,7 +3509,8 @@ def parse_model(d, ch, verbose=True):
             if m in {Detect, MAFDetect, IDetect, YOLOEDetect, 
                      Segment, MAFSegment, ISegment, Segment26, YOLOESegment, YOLOESegment26, 
                      Pose, MAFPose, IPose, Pose26, RTMOPose, RLEPose,
-                     OBB, MAFOBB, IOBB, OBB26}:
+                     OBB, MAFOBB, IOBB, OBB26,
+                     AttnResDetect, AttnResSegment, AttnResOBB, AttnResPose}:
                 m.legacy = legacy
         elif m is v10Detect:
             args.append([ch[x] for x in f])
@@ -3596,7 +3634,7 @@ def parse_model(d, ch, verbose=True):
                    SwinTransformer_RoPE_Small, SwinTransformer_RoPE_Base, SwinTransformer_RoPE_Large, SwinTransformer_ViT5_Tiny, SwinTransformer_ViT5_Small, SwinTransformer_ViT5_Base, SwinTransformer_ViT5_Large,
                    efficientMod_xxs, efficientMod_xs, efficientMod_s, efficientMod_s_Conv, repnext_m0, repnext_m1, repnext_m2, repnext_m3, repnext_m4, repnext_m5, repnext_attnres_m0, repnext_attnres_m1, 
                    repnext_attnres_m2, repnext_attnres_m3, repnext_attnres_m4, repnext_attnres_m5, h_vittt_tiny, h_vittt_small, h_vittt_base, microvit_1, microvit_2, microvit_3, microvitv2_1, microvitv2_2, 
-                   microvitv2_2_mdta, microvitv2_3}:
+                   microvitv2_2_mdta, microvitv2_3, cpubone_nano, cpubone_t0, cpubone_s0, cpubone_s1, cpubone_b0, cpubone_b1, cpubone_b15, cpubone_b2, cpubone_b25, cpubone_b3, cpubone_b4, cpubone_b5}:
             m = m(*args)
             c2 = m.width_list 
             backbone = True
@@ -3735,15 +3773,15 @@ def guess_model_task(model):
             with contextlib.suppress(Exception):
                 return cfg2task(eval(x))  # nosec B307: safe eval of known attribute paths
         for m in model.modules():
-            if isinstance(m, (Segment, MAFSegment, ISegment, YOLOESegment)):
+            if isinstance(m, (Segment, MAFSegment, ISegment, YOLOESegment, AttnResSegment)):
                 return "segment"
             elif isinstance(m, Classify):
                 return "classify"
-            elif isinstance(m, (Pose, MAFPose, IPose, RTMOPose, RLEPose)):
+            elif isinstance(m, (Pose, MAFPose, IPose, RTMOPose, RLEPose, AttnResPose)):
                 return "pose"
-            elif isinstance(m, (OBB, MAFOBB, IOBB)):
+            elif isinstance(m, (OBB, MAFOBB, IOBB, AttnResOBB)):
                 return "obb"
-            elif isinstance(m, (Detect, MAFDetect, IDetect, WorldDetect, YOLOEDetect, v10Detect)):
+            elif isinstance(m, (Detect, MAFDetect, IDetect, WorldDetect, YOLOEDetect, v10Detect, AttnResDetect)):
                 return "detect"
 
     # Guess from model filename

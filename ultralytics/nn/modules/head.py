@@ -22,7 +22,7 @@ from .transformer import MLP, DeformableTransformerDecoder, DeformableTransforme
 from .utils import bias_init_with_prob, linear_init
 from .mafyolo import UniRepLKNetBlock_pro
 
-__all__ = "OBB", "MAFOBB", "IOBB", "OBB26", "Classify", "Detect", "MAFDetect", "IDetect", "Pose", "MAFPose", "IPose", "Pose26", "RTMOPose", "RLEPose", "RTDETRDecoder", "Segment", "MAFSegment", "ISegment", "Segment26", "YOLOEDetect", "YOLOESegment", "v10Detect"
+__all__ = "OBB", "MAFOBB", "IOBB", "OBB26", "Classify", "Detect", "MAFDetect", "IDetect", "Pose", "MAFPose", "IPose", "Pose26", "RTMOPose", "RLEPose", "RTDETRDecoder", "Segment", "MAFSegment", "ISegment", "Segment26", "YOLOEDetect", "YOLOESegment", "v10Detect", "AttnResDetect", "AttnResSegment", "AttnResOBB", "AttnResPose"
 
 EPS = 1e-8
 
@@ -3461,3 +3461,638 @@ class v10Detect(Detect):
     def fuse(self):
         """Remove the one2many head for inference optimization."""
         self.cv2 = self.cv3 = None
+
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (RMSNorm) 
+    論文要求在計算 Attention Keys 之前使用 RMSNorm，以防止數值過大的特徵主導 Softmax。
+    """
+    def __init__(self, d, eps=1e-8):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(d))
+
+    def forward(self, x):
+        # x shape: (B, C)
+        norm_x = torch.mean(x ** 2, dim=-1, keepdim=True)
+        return x * torch.rsqrt(norm_x + self.eps) * self.scale
+
+
+class AttentionResidualsCNN(nn.Module):
+    """
+    論文中的 Attention Residuals 機制 (CNN 適配版)。
+    透過一個可學習的 pseudo-query (初始為 0)，對多個歷史特徵圖進行深度方向 (Depth-wise) 的 Softmax 注意力加權。
+    """
+    def __init__(self, channels):
+        super().__init__()
+        # 論文強調：pseudo-query 必須初始化為 0，確保訓練初期等價於均值池化，維持穩定。
+        self.query = nn.Parameter(torch.zeros(channels))
+        self.norm = RMSNorm(channels)
+        self.gap = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, history: list[torch.Tensor]) -> torch.Tensor:
+        """
+        history: 包含多個 (B, C, H, W) 歷史特徵的列表
+        """
+        B, C, H, W = history[0].shape
+        num_src = len(history)
+
+        if num_src == 1:
+            return history[0]
+
+        # 1. 產生 Keys: 將特徵圖 GAP 壓縮後做 RMSNorm
+        keys = []
+        for v in history:
+            k = self.gap(v).view(B, C)  # (B, C)
+            k = self.norm(k)            # (B, C)
+            keys.append(k)
+            
+        keys_tensor = torch.stack(keys, dim=1) # (B, num_src, C)
+
+        # 2. 計算 Attention Logits (Query 和 Keys 的內積)
+        # keys_tensor: (B, num_src, C), query: (C,) -> logits: (B, num_src)
+        logits = torch.einsum('b s c, c -> b s', keys_tensor, self.query)
+
+        # 3. Softmax 獲得注意力權重
+        attn_weights = torch.softmax(logits, dim=1) # (B, num_src)
+
+        # 4. 對歷史特徵進行加權聚合
+        # 將權重 reshape 為 (B, num_src, 1, 1, 1) 以廣播至 (B, num_src, C, H, W)
+        history_tensor = torch.stack(history, dim=1) 
+        attn_weights = attn_weights.view(B, num_src, 1, 1, 1)
+        
+        out = torch.sum(history_tensor * attn_weights, dim=1) # (B, C, H, W)
+        return out
+
+
+class AttnResBoxHead(nn.Module):
+    """基於 Attention Residuals 改良的 YOLOv8 Box 預測分支"""
+    def __init__(self, in_ch, out_ch, hidden_ch):
+        super().__init__()
+        self.conv1 = Conv(in_ch, hidden_ch, 3)
+        self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResClsHead(nn.Module):
+    """基於 Attention Residuals 改良的 YOLOv8 Cls 預測分支"""
+    def __init__(self, in_ch, out_ch, hidden_ch, legacy=False):
+        super().__init__()
+        if legacy:
+            self.conv1 = Conv(in_ch, hidden_ch, 3)
+            self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        else:
+            self.conv1 = nn.Sequential(DWConv(in_ch, in_ch, 3), Conv(in_ch, hidden_ch, 1))
+            self.conv2 = nn.Sequential(DWConv(hidden_ch, hidden_ch, 3), Conv(hidden_ch, hidden_ch, 1))
+
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResMaskHead(nn.Module):
+    """基於 Attention Residuals 改良的 YOLOv8 Mask 係數預測分支 (cv4)"""
+    def __init__(self, in_ch, out_ch, hidden_ch):
+        super().__init__()
+        self.conv1 = Conv(in_ch, hidden_ch, 3)
+        self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResSemSegHead(nn.Module):
+    """基於 Attention Residuals 改良的語義分割輔助分支"""
+    def __init__(self, in_ch, out_ch, hidden_ch):
+        super().__init__()
+        self.conv1 = Conv(in_ch, hidden_ch, 3)
+        self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResProto26(Proto):
+    """Ultralytics YOLO26 models mask Proto module for segmentation models."""
+
+    def __init__(self, ch: tuple = (), c_: int = 256, c2: int = 32, nc: int = 80):
+        """Initialize the Ultralytics YOLO models mask Proto module with specified number of protos and masks.
+
+        Args:
+            ch (tuple): Tuple of channel sizes from backbone feature maps.
+            c_ (int): Intermediate channels.
+            c2 (int): Output channels (number of protos).
+            nc (int): Number of classes for semantic segmentation.
+        """
+        super().__init__(c_, c_, c2)
+        self.feat_refine = nn.ModuleList(Conv(x, ch[0], k=1) for x in ch[1:])
+        self.feat_fuse = Conv(ch[0], c_, k=3)
+        
+        # 【修改 1】: 將原來的 nn.Sequential 替換為 AttnResSemSegHead
+        # 原代碼: self.semseg = nn.Sequential(Conv(ch[0], c_, k=3), Conv(c_, c_, k=3), nn.Conv2d(c_, nc, 1))
+        self.semseg = AttnResSemSegHead(in_ch=ch[0], out_ch=nc, hidden_ch=c_)
+
+    def forward(self, x: torch.Tensor, return_semseg: bool = True) -> torch.Tensor:
+        """Perform a forward pass through layers using an upsampled input image."""
+        feat = x[0]
+        for i, f in enumerate(self.feat_refine):
+            up_feat = f(x[i + 1])
+            up_feat = F.interpolate(up_feat, size=feat.shape[2:], mode="nearest")
+            feat = feat + up_feat
+            
+        p = super().forward(self.feat_fuse(feat))
+        
+        if self.training and return_semseg:
+            semseg = self.semseg(feat)
+            return (p, semseg)
+        return p
+
+    def fuse(self):
+        """Fuse the model for inference by removing the semantic segmentation head."""
+        self.semseg = None
+
+
+class AttnResOBBHead(nn.Module):
+    """基於 Attention Residuals 改良的 YOLOv8 OBB 係數預測分支 (cv4)"""
+    def __init__(self, in_ch, out_ch, hidden_ch):
+        super().__init__()
+        self.conv1 = Conv(in_ch, hidden_ch, 3)
+        self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResPoseHead(nn.Module):
+    """基於 Attention Residuals 改良的 YOLOv8 Pose 係數預測分支 (cv4)"""
+    def __init__(self, in_ch, out_ch, hidden_ch):
+        super().__init__()
+        self.conv1 = Conv(in_ch, hidden_ch, 3)
+        self.conv2 = Conv(hidden_ch, hidden_ch, 3)
+        # 動態聚合 conv1 和 conv2 的特徵
+        self.attn_res = AttentionResidualsCNN(hidden_ch)
+        self.pred = nn.Conv2d(hidden_ch, out_ch, 1)
+
+    def forward(self, x):
+        h1 = self.conv1(x)
+        h2 = self.conv2(h1)
+        h_attn = self.attn_res([h1, h2]) # 深度特徵回顧
+        return self.pred(h_attn)
+
+
+class AttnResDetect(nn.Module):
+    """YOLO Detect head enhanced with Attention Residuals."""
+    dynamic = False  
+    export = False  
+    format = None  
+    max_det = 300  
+    shape = None
+    anchors = torch.empty(0)  
+    strides = torch.empty(0)  
+    legacy = False  
+    xyxy = False  
+
+    def __init__(self, nc: int = 80, reg_max=16, end2end=False, rtmo=False, rlepose=False, ch: tuple = ()):
+        super().__init__()
+        self.nc = nc  
+        self.nl = len(ch)  
+        self.reg_max = reg_max  
+        self.no = nc + self.reg_max * 4  
+        self.stride = torch.zeros(self.nl)  
+        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  
+
+        # 使用 AttnResBoxHead 和 AttnResClsHead 替換原來的 nn.Sequential
+        self.cv2 = nn.ModuleList(
+            AttnResBoxHead(x, 4 * self.reg_max, c2) for x in ch
+        )
+        
+        self.cv3 = nn.ModuleList(
+            AttnResClsHead(x, self.nc, c3, legacy=self.legacy) for x in ch
+        )
+
+        self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+
+        if end2end:
+            self.one2one_cv2 = copy.deepcopy(self.cv2)
+            self.one2one_cv3 = copy.deepcopy(self.cv3)
+
+    @property
+    def one2many(self):
+        return dict(box_head=self.cv2, cls_head=self.cv3)
+
+    @property
+    def one2one(self):
+        return dict(box_head=self.one2one_cv2, cls_head=self.one2one_cv3)
+
+    @property
+    def end2end(self):
+        return hasattr(self, "one2one")
+
+    def forward_head(self, x: list[torch.Tensor], box_head: nn.Module = None, cls_head: nn.Module = None):
+        if box_head is None or cls_head is None:  
+            return dict()
+        bs = x[0].shape[0]  
+        boxes = torch.cat([box_head[i](x[i]).view(bs, 4 * self.reg_max, -1) for i in range(self.nl)], dim=-1)
+        scores = torch.cat([cls_head[i](x[i]).view(bs, self.nc, -1) for i in range(self.nl)], dim=-1)
+        return dict(boxes=boxes, scores=scores, feats=x)
+
+    def forward(self, x: list[torch.Tensor]):
+        preds = self.forward_head(x, **self.one2many)
+        if self.end2end:
+            x_detach = [xi.detach() for xi in x]
+            one2one = self.forward_head(x_detach, **self.one2one)
+            preds = {"one2many": preds, "one2one": one2one}
+        if self.training:
+            return preds
+        y = self._inference(preds["one2one"] if self.end2end else preds)
+        if self.end2end:
+            y = self.postprocess(y.permute(0, 2, 1))
+        return y if self.export else (y, preds)
+
+    def _inference(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        dbox = self._get_decode_boxes(x)
+        return torch.cat((dbox, x["scores"].sigmoid()), 1)
+
+    def _get_decode_boxes(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        shape = x["feats"][0].shape  
+        if self.dynamic or self.shape != shape:
+            self.anchors, self.strides = (a.transpose(0, 1) for a in make_anchors(x["feats"], self.stride, 0.5))
+            self.shape = shape
+        dbox = self.decode_bboxes(self.dfl(x["boxes"]), self.anchors.unsqueeze(0)) * self.strides
+        return dbox
+
+    def bias_init(self):
+        """Initialize Detect() biases, WARNING: requires stride availability."""
+        for i, (a, b) in enumerate(zip(self.one2many["box_head"], self.one2many["cls_head"])):  
+            # 因為把最後一層卷積命名為了 self.pred，所以此處需要從 a[-1] 改為 a.pred
+            a.pred.bias.data[:] = 2.0  
+            b.pred.bias.data[: self.nc] = math.log(5 / self.nc / (640 / self.stride[i]) ** 2)
+            
+        if self.end2end:
+            for i, (a, b) in enumerate(zip(self.one2one["box_head"], self.one2one["cls_head"])):  
+                a.pred.bias.data[:] = 2.0  
+                b.pred.bias.data[: self.nc] = math.log(5 / self.nc / (640 / self.stride[i]) ** 2)
+
+    def decode_bboxes(self, bboxes, anchors, xywh: bool = True):
+        return dist2bbox(bboxes, anchors, xywh=xywh and not self.end2end and not self.xyxy, dim=1)
+
+    def postprocess(self, preds: torch.Tensor) -> torch.Tensor:
+        boxes, scores = preds.split([4, self.nc], dim=-1)
+        scores, conf, idx = self.get_topk_index(scores, self.max_det)
+        boxes = boxes.gather(dim=1, index=idx.repeat(1, 1, 4))
+        return torch.cat([boxes, scores, conf], dim=-1)
+
+    def get_topk_index(self, scores, max_det):
+        batch_size, anchors, nc = scores.shape  
+        k = max_det if self.export else min(max_det, anchors)
+        ori_index = scores.max(dim=-1)[0].topk(k)[1].unsqueeze(-1)
+        scores = scores.gather(dim=1, index=ori_index.repeat(1, 1, nc))
+        scores, index = scores.flatten(1).topk(k)
+        idx = ori_index[torch.arange(batch_size)[..., None], index // nc]  
+        return scores[..., None], (index % nc)[..., None].float(), idx
+
+    def fuse(self):
+        self.cv2 = self.cv3 = None
+
+
+class AttnResSegment(AttnResDetect):
+    """YOLO Segment head for segmentation models.
+
+    This class extends the Detect head to include mask prediction capabilities for instance segmentation tasks.
+    It uses Proto26 to fuse multi-scale features and provide auxiliary semantic segmentation during training.
+    """
+
+    def __init__(self, nc: int = 80, nm: int = 32, npr: int = 256, reg_max=16, end2end=False, rtmo=False, rlepose=False, ch: tuple = ()):
+        """Initialize the YOLO model attributes such as the number of masks, prototypes, and the convolution layers."""
+        super().__init__(nc, reg_max, end2end, rtmo, rlepose, ch)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        
+        # 【修改 1】: 將 Proto 替換為 Proto26
+        # 傳入完整的 ch (通道列表), c_ (中間通道 npr), c2 (輸出 mask 通道 nm), nc (類別數)
+        self.proto = AttnResProto26(ch, self.npr, self.nm, nc)
+
+        c4 = max(ch[0] // 4, self.nm)
+        # 【修改 2】: 將原來的 nn.Sequential 替換為 AttnResMaskHead
+        # 原代碼: self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nm, 1)) for x in ch)
+        self.cv4 = nn.ModuleList(
+            AttnResMaskHead(x, self.nm, c4) for x in ch
+        )
+        if end2end:
+            self.one2one_cv4 = copy.deepcopy(self.cv4)
+
+    @property
+    def one2many(self):
+        """Returns the one-to-many head components, here for backward compatibility."""
+        return dict(box_head=self.cv2, cls_head=self.cv3, mask_head=self.cv4)
+
+    @property
+    def one2one(self):
+        """Returns the one-to-one head components."""
+        return dict(box_head=self.one2one_cv2, cls_head=self.one2one_cv3, mask_head=self.one2one_cv4)
+
+    def forward(self, x: list[torch.Tensor]) -> tuple | list[torch.Tensor] | dict[str, torch.Tensor]:
+        """Return model outputs and mask coefficients if training, otherwise return outputs and mask coefficients."""
+        outputs = super().forward(x)
+        preds = outputs[1] if isinstance(outputs, tuple) else outputs
+        
+        # 【修改 2】: Proto26 需要接收整個列表 `x` 來進行多尺度特徵融合
+        proto_out = self.proto(x)
+        
+        # 處理 Proto26 在訓練時返回 (proto, semseg) 元組的情況
+        if isinstance(proto_out, tuple):
+            proto, semseg = proto_out
+        else:
+            proto, semseg = proto_out, None
+
+        if isinstance(preds, dict):  # training and validating during training
+            if self.end2end:
+                preds["one2many"]["proto"] = proto
+                preds["one2one"]["proto"] = proto.detach()
+                # 儲存輔助語義分割輸出供 Loss 使用
+                if semseg is not None:
+                    preds["one2many"]["semseg"] = semseg 
+            else:
+                preds["proto"] = proto
+                # 儲存輔助語義分割輸出供 Loss 使用
+                if semseg is not None:
+                    preds["semseg"] = semseg
+                    
+        if self.training:
+            return preds
+        return (outputs, proto) if self.export else ((outputs[0], proto), preds)
+
+    def _inference(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Decode predicted bounding boxes and class probabilities, concatenated with mask coefficients."""
+        preds = super()._inference(x)
+        return torch.cat([preds, x["mask_coefficient"]], dim=1)
+
+    def forward_head(
+        self, x: list[torch.Tensor], box_head: torch.nn.Module, cls_head: torch.nn.Module, mask_head: torch.nn.Module
+    ) -> torch.Tensor:
+        """Concatenates and returns predicted bounding boxes, class probabilities, and mask coefficients."""
+        preds = super().forward_head(x, box_head, cls_head)
+        if mask_head is not None:
+            bs = x[0].shape[0]  # batch size
+            # 這裡的 mask_head 就是我們的 AttnResMaskHead
+            preds["mask_coefficient"] = torch.cat([mask_head[i](x[i]).view(bs, self.nm, -1) for i in range(self.nl)], 2)
+        return preds
+
+    def postprocess(self, preds: torch.Tensor) -> torch.Tensor:
+        """Post-process YOLO model predictions."""
+        boxes, scores, mask_coefficient = preds.split([4, self.nc, self.nm], dim=-1)
+        scores, conf, idx = self.get_topk_index(scores, self.max_det)
+        boxes = boxes.gather(dim=1, index=idx.repeat(1, 1, 4))
+        mask_coefficient = mask_coefficient.gather(dim=1, index=idx.repeat(1, 1, self.nm))
+        return torch.cat([boxes, scores, conf, mask_coefficient], dim=-1)
+
+    def fuse(self) -> None:
+        """Remove the one2many head and semseg head for inference optimization."""
+        self.cv2 = self.cv3 = self.cv4 = None
+        # 【修改 3】: 確保在推理融合時，移除 Proto26 內部的 semseg 頭
+        if hasattr(self.proto, 'fuse'):
+            self.proto.fuse()
+
+
+class AttnResOBB(AttnResDetect):
+    """YOLO OBB detection head for detection with rotation models.
+
+    This class extends the Detect head to include oriented bounding box prediction with rotation angles.
+
+    Attributes:
+        ne (int): Number of extra parameters.
+        cv4 (nn.ModuleList): Convolution layers for angle prediction.
+        angle (torch.Tensor): Predicted rotation angles.
+
+    Methods:
+        forward: Concatenate and return predicted bounding boxes and class probabilities.
+        decode_bboxes: Decode rotated bounding boxes.
+
+    Examples:
+        Create an OBB detection head
+        >>> obb = OBB(nc=80, ne=1, ch=(256, 512, 1024))
+        >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
+        >>> outputs = obb(x)
+    """
+
+    def __init__(self, nc: int = 80, ne: int = 1, reg_max=16, end2end=False, rtmo=False, rlepose=False, ch: tuple = ()):
+        """Initialize OBB with number of classes `nc` and layer channels `ch`.
+
+        Args:
+            nc (int): Number of classes.
+            ne (int): Number of extra parameters.
+            reg_max (int): Maximum number of DFL channels.
+            end2end (bool): Whether to use end-to-end NMS-free detection.
+            ch (tuple): Tuple of channel sizes from backbone feature maps.
+        """
+        super().__init__(nc, reg_max, end2end, rtmo, rlepose, ch)
+        self.ne = ne  # number of extra parameters
+
+        c4 = max(ch[0] // 4, self.ne)
+        # 【修改 2】: 將原來的 nn.Sequential 替換為 AttnResOBBHead
+        # 原代碼: self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.ne, 1)) for x in ch)
+        self.cv4 = nn.ModuleList(
+            AttnResOBBHead(x, self.ne, c4) for x in ch
+        )
+        if end2end:
+            self.one2one_cv4 = copy.deepcopy(self.cv4)
+
+    @property
+    def one2many(self):
+        """Returns the one-to-many head components, here for backward compatibility."""
+        return dict(box_head=self.cv2, cls_head=self.cv3, angle_head=self.cv4)
+
+    @property
+    def one2one(self):
+        """Returns the one-to-one head components."""
+        return dict(box_head=self.one2one_cv2, cls_head=self.one2one_cv3, angle_head=self.one2one_cv4)
+
+    def _inference(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Decode predicted bounding boxes and class probabilities, concatenated with rotation angles."""
+        # For decode_bboxes convenience
+        self.angle = x["angle"]  # TODO: need to test obb
+        preds = super()._inference(x)
+        return torch.cat([preds, x["angle"]], dim=1)
+
+    def forward_head(
+        self, x: list[torch.Tensor], box_head: torch.nn.Module, cls_head: torch.nn.Module, angle_head: torch.nn.Module
+    ) -> torch.Tensor:
+        """Concatenates and returns predicted bounding boxes, class probabilities, and angles."""
+        preds = super().forward_head(x, box_head, cls_head)
+        if angle_head is not None:
+            bs = x[0].shape[0]  # batch size
+            angle = torch.cat(
+                [angle_head[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2
+            )  # OBB theta logits
+            angle = (angle.sigmoid() - 0.25) * math.pi  # [-pi/4, 3pi/4]
+            preds["angle"] = angle
+        return preds
+
+    def decode_bboxes(self, bboxes: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
+        """Decode rotated bounding boxes."""
+        return dist2rbox(bboxes, self.angle, anchors, dim=1)
+
+    def postprocess(self, preds: torch.Tensor) -> torch.Tensor:
+        """Post-process YOLO model predictions.
+
+        Args:
+            preds (torch.Tensor): Raw predictions with shape (batch_size, num_anchors, 4 + nc + ne) with last dimension
+                format [x, y, w, h, class_probs, angle].
+
+        Returns:
+            (torch.Tensor): Processed predictions with shape (batch_size, min(max_det, num_anchors), 7) and last
+                dimension format [x, y, w, h, max_class_prob, class_index, angle].
+        """
+        boxes, scores, angle = preds.split([4, self.nc, self.ne], dim=-1)
+        scores, conf, idx = self.get_topk_index(scores, self.max_det)
+        boxes = boxes.gather(dim=1, index=idx.repeat(1, 1, 4))
+        angle = angle.gather(dim=1, index=idx.repeat(1, 1, self.ne))
+        return torch.cat([boxes, scores, conf, angle], dim=-1)
+
+    def fuse(self) -> None:
+        """Remove the one2many head for inference optimization."""
+        self.cv2 = self.cv3 = self.cv4 = None
+
+
+class AttnResPose(AttnResDetect):
+    """YOLO Pose head for keypoints models.
+
+    This class extends the Detect head to include keypoint prediction capabilities for pose estimation tasks.
+
+    Attributes:
+        kpt_shape (tuple): Number of keypoints and dimensions (2 for x,y or 3 for x,y,visible).
+        nk (int): Total number of keypoint values.
+        cv4 (nn.ModuleList): Convolution layers for keypoint prediction.
+
+    Methods:
+        forward: Perform forward pass through YOLO model and return predictions.
+        kpts_decode: Decode keypoints from predictions.
+
+    Examples:
+        Create a pose detection head
+        >>> pose = Pose(nc=80, kpt_shape=(17, 3), ch=(256, 512, 1024))
+        >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
+        >>> outputs = pose(x)
+    """
+
+    def __init__(self, nc: int = 80, kpt_shape: tuple = (17, 3), reg_max=16, end2end=False, rtmo=False, rlepose=False, ch: tuple = ()):
+        """Initialize YOLO network with default parameters and Convolutional Layers.
+
+        Args:
+            nc (int): Number of classes.
+            kpt_shape (tuple): Number of keypoints, number of dims (2 for x,y or 3 for x,y,visible).
+            reg_max (int): Maximum number of DFL channels.
+            end2end (bool): Whether to use end-to-end NMS-free detection.
+            ch (tuple): Tuple of channel sizes from backbone feature maps.
+        """
+        super().__init__(nc, reg_max, end2end, rtmo, rlepose, ch)
+        self.kpt_shape = kpt_shape  # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
+        self.nk = kpt_shape[0] * kpt_shape[1]  # number of keypoints total
+
+        c4 = max(ch[0] // 4, self.nk)
+        # 【修改 2】: 將原來的 nn.Sequential 替換為 AttnResOBBHead
+        # 原代碼: self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch)
+        self.cv4 = nn.ModuleList(
+            AttnResPoseHead(x, self.nk, c4) for x in ch
+        )
+        if end2end:
+            self.one2one_cv4 = copy.deepcopy(self.cv4)
+
+    @property
+    def one2many(self):
+        """Returns the one-to-many head components, here for backward compatibility."""
+        return dict(box_head=self.cv2, cls_head=self.cv3, pose_head=self.cv4)
+
+    @property
+    def one2one(self):
+        """Returns the one-to-one head components."""
+        return dict(box_head=self.one2one_cv2, cls_head=self.one2one_cv3, pose_head=self.one2one_cv4)
+
+    def _inference(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Decode predicted bounding boxes and class probabilities, concatenated with keypoints."""
+        preds = super()._inference(x)
+        return torch.cat([preds, self.kpts_decode(x["kpts"])], dim=1)
+
+    def forward_head(
+        self, x: list[torch.Tensor], box_head: torch.nn.Module, cls_head: torch.nn.Module, pose_head: torch.nn.Module
+    ) -> torch.Tensor:
+        """Concatenates and returns predicted bounding boxes, class probabilities, and keypoints."""
+        preds = super().forward_head(x, box_head, cls_head)
+        if pose_head is not None:
+            bs = x[0].shape[0]  # batch size
+            preds["kpts"] = torch.cat([pose_head[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], 2)
+        return preds
+
+    def postprocess(self, preds: torch.Tensor) -> torch.Tensor:
+        """Post-process YOLO model predictions.
+
+        Args:
+            preds (torch.Tensor): Raw predictions with shape (batch_size, num_anchors, 4 + nc + nk) with last dimension
+                format [x, y, w, h, class_probs, keypoints].
+
+        Returns:
+            (torch.Tensor): Processed predictions with shape (batch_size, min(max_det, num_anchors), 6 + self.nk) and
+                last dimension format [x, y, w, h, max_class_prob, class_index, keypoints].
+        """
+        boxes, scores, kpts = preds.split([4, self.nc, self.nk], dim=-1)
+        scores, conf, idx = self.get_topk_index(scores, self.max_det)
+        boxes = boxes.gather(dim=1, index=idx.repeat(1, 1, 4))
+        kpts = kpts.gather(dim=1, index=idx.repeat(1, 1, self.nk))
+        return torch.cat([boxes, scores, conf, kpts], dim=-1)
+
+    def fuse(self) -> None:
+        """Remove the one2many head for inference optimization."""
+        self.cv2 = self.cv3 = self.cv4 = None
+
+    def kpts_decode(self, kpts: torch.Tensor) -> torch.Tensor:
+        """Decode keypoints from predictions."""
+        ndim = self.kpt_shape[1]
+        bs = kpts.shape[0]
+        if self.export:
+            y = kpts.view(bs, *self.kpt_shape, -1)
+            a = (y[:, :, :2] * 2.0 + (self.anchors - 0.5)) * self.strides
+            if ndim == 3:
+                a = torch.cat((a, y[:, :, 2:3].sigmoid()), 2)
+            return a.view(bs, self.nk, -1)
+        else:
+            y = kpts.clone()
+            if ndim == 3:
+                if NOT_MACOS14:
+                    y[:, 2::ndim].sigmoid_()
+                else:  # Apple macOS14 MPS bug https://github.com/ultralytics/ultralytics/pull/21878
+                    y[:, 2::ndim] = y[:, 2::ndim].sigmoid()
+            y[:, 0::ndim] = (y[:, 0::ndim] * 2.0 + (self.anchors[0] - 0.5)) * self.strides
+            y[:, 1::ndim] = (y[:, 1::ndim] * 2.0 + (self.anchors[1] - 0.5)) * self.strides
+            return y

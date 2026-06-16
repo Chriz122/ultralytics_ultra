@@ -7,7 +7,7 @@
 -- 安裝補充相依套件（擇一）：
   ```powershell
   # 選項 A：安裝專案附帶的 wheel
-  pip install Install_Dependencies\ultralytics-8.4.6.17.119-py3-none-any.whl
+  pip install Install_Dependencies\ultralytics-8.4.6.17.122-py3-none-any.whl
 
   # 選項 B：使用本專案的 requirements 清單安裝所有相依套件
   pip install -r Install_Dependencies\requirement.txt

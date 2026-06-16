@@ -298,6 +298,10 @@ from .head import (
     YOLOESegment,
     YOLOESegment26,
     v10Detect,
+    AttnResDetect, 
+    AttnResSegment, 
+    AttnResOBB, 
+    AttnResPose,
 )
 from .transformer import (
     AIFI,
@@ -503,6 +507,7 @@ from .EfficientMod import efficientMod_xxs, efficientMod_xs, efficientMod_s, eff
 from .RepNeXt import repnext_m0, repnext_m1, repnext_m2, repnext_m3, repnext_m4, repnext_m5, RepDWConvS, RepDWConvM, ConvNorm
 from .RepNeXt_AttnRes import repnext_attnres_m0, repnext_attnres_m1, repnext_attnres_m2, repnext_attnres_m3, repnext_attnres_m4, repnext_attnres_m5
 from .ViTTT import h_vittt_tiny, h_vittt_small, h_vittt_base
+from .CPUBone import cpubone_nano, cpubone_t0, cpubone_s0, cpubone_s1, cpubone_b0, cpubone_b1, cpubone_b15, cpubone_b2, cpubone_b25, cpubone_b3, cpubone_b4, cpubone_b5
 # Modular ------------------------------------------------------------
 from .FasterNet_modular import PatchEmbed_Faster, PatchMerging_Faster, FasterNetLayer
 from .PartialNet_modular import Partial_PatchEmbed, Partial_Block, Partial_Downsample 
@@ -556,7 +561,8 @@ from .BinaryAttention import C2PBA, C3k2PBA
 from .CirculantAttention import C2PCA, C3k2PCA
 from .NS_FPN import LateralConnection
 from .ViT5_block import ViT5Block
-from .TTT import TTTC2f_AttnRes, HybridA2C2f_TTT_AttnRes
+from .TTT import TTTC2f_AttnRes, HybridA2C2f_TTT_AttnRes, HybridA2C2f_TTT, TTTC2f
+from .AttnRes import BlockAttnResMerge, C2f_FullAttnRes
 
 from .moe import (
     OptimizedMOE,
@@ -1026,6 +1032,8 @@ __all__ = (
     "A2C2f_AttnRes",
     "TTTC2f_AttnRes",
     "HybridA2C2f_TTT_AttnRes",
+    "HybridA2C2f_TTT", 
+    "TTTC2f",
     "C3k2_AttnRes",
     "MSCAM",
     "MSCAMv2",
@@ -1616,6 +1624,18 @@ __all__ = (
     "repnext_attnres_m3", 
     "repnext_attnres_m4", 
     "repnext_attnres_m5",
+    "cpubone_nano", 
+    "cpubone_t0", 
+    "cpubone_s0", 
+    "cpubone_s1", 
+    "cpubone_b0", 
+    "cpubone_b1", 
+    "cpubone_b15", 
+    "cpubone_b2", 
+    "cpubone_b25", 
+    "cpubone_b3", 
+    "cpubone_b4", 
+    "cpubone_b5",
     "h_vittt_tiny", 
     "h_vittt_small", 
     "h_vittt_base",
@@ -1726,6 +1746,12 @@ __all__ = (
     "ViT5Block",
     "FreqFusion",
     "FdamBlock",
+    "AttnResDetect", 
+    "AttnResSegment", 
+    "AttnResOBB", 
+    "AttnResPose",
+    "BlockAttnResMerge",
+    "C2f_FullAttnRes",
     
     "PatchEmbed_Faster",
     "PatchMerging_Faster", 

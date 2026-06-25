@@ -6,8 +6,6 @@
 
 # Parameters
 nc: 80 # number of classes
-# end2end: True # whether to use end-to-end mode
-# reg_max: 1 # DFL bins
 scales: # model compound scaling constants, i.e. 'model=yolo26n.yaml' will call yolo26.yaml with scale 'n'
   # [depth, width, max_channels]
   n: [0.50, 0.25, 1024, 0] # summary: 260 layers, 2,572,280 parameters, 2,572,280 gradients, 6.1 GFLOPs
@@ -49,4 +47,4 @@ head:
   - [[-1, 10], 1, Concat, [1]] # cat head P5
   - [-1, 1, C3k2, [1024, True, 0.5, True]] # 22 (P5/32-large)
 
-  - [[16, 19, 22], 1, Detect, [nc]] # Detect(P3, P4, P5)
+  - [[16, 19, 22], 1, AttnResDetect, [nc]] # Detect(P3, P4, P5)

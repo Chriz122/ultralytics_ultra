@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from ultralytics.utils import LOGGER, DataExportMixin, SimpleClass, TryExcept, checks, plt_settings
+from ultralytics.utils.plotting import colors
 from .ops import xyxy2xywh
 
 OKS_SIGMA = (
@@ -23,6 +24,29 @@ OKS_SIGMA = (
     / 10.0
 )
 RLE_WEIGHT = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 1.2, 1.5, 1.5, 1.0, 1.0, 1.2, 1.2, 1.5, 1.5])
+CITYSCAPES_WEIGHT = np.array(
+    [
+        0.8373,
+        0.918,
+        0.866,
+        1.0345,
+        1.0166,
+        0.9969,
+        0.9754,
+        1.0489,
+        0.8786,
+        1.0023,
+        0.9539,
+        0.9843,
+        1.1116,
+        0.9037,
+        1.0865,
+        1.0955,
+        1.0865,
+        1.1529,
+        1.0507,
+    ]
+)
 
 
 def bbox_ioa(box1: np.ndarray, box2: np.ndarray, iou: bool = False, eps: float = 1e-7) -> np.ndarray:
@@ -110,12 +134,11 @@ class WIoU_Scale:
                 alpha = delta * torch.pow(gamma, beta - delta)
                 return beta / alpha
         return 1
+    
 
-############################################################################################################################
 def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=False, SIoU=False, WIoU=False,
              ShapeIoU=False, PIoU=False, PIoU2=False,
-             hw=1, mpdiou=False, Inner=False, Focaleriou=False, d=0.00, u=0.95, ratio=1.15, eps=1e-7, Lambda=1.3, scale=0.0):
-############################################################################################################################
+             hw=1, mpdiou=False, Inner=False, Focaleriou=False, FoCIoU=False, d=0.00, u=0.95, ratio=1.15, eps=1e-7, Lambda=1.3, scale=0.0):
     """
     Calculate Intersection over Union (IoU) of box1(1, 4) to box2(n, 4).
     Args:
@@ -132,9 +155,11 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
         ShapeIoU (bool, optional): If True, calculate ShapeIoU. Defaults to False.
         mpdiou (bool, optional): If True, calculate mpdiou. Defaults to False.
         PIoU (bool, optional): If True, calculate PIoU. Defaults to False.
+        Focaleriou (bool, optional): If True, calculate Focaler-IoU. Defaults to False.
+        FoCIoU (bool, optional): If True, calculate Focused Complete-IoU (from YOLO-ULM). Defaults to False.
         eps (float, optional): A small value to avoid division by zero. Defaults to 1e-7.
     Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
+        (torch.Tensor): IoU, GIoU, DIoU, CIoU, or FoCIoU values depending on the specified flags.
     """
     if Inner:
         if not xywh:
@@ -151,8 +176,6 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
 
         # Union Area
         union = w1 * h1 * ratio * ratio + w2 * h2 * ratio * ratio - inter + eps
-        # print('inner')
-    # Get the coordinates of bounding boxes
     else:
         if xywh:  # transform from xywh to xyxy
             (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
@@ -170,32 +193,44 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
                 (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp_(0)
         # Union Area
         union = w1 * h1 + w2 * h2 - inter + eps
-        # IoU
+        
+    # IoU
     iou = inter / union
     
     if Focaleriou:
         iou = ((iou - d) / (u - d)).clamp(0, 1)  # default d=0.00,u=0.95
 
-    if CIoU or DIoU or GIoU or EIoU or SIoU or ShapeIoU or mpdiou or WIoU or PIoU or PIoU2:
+    if CIoU or DIoU or GIoU or EIoU or SIoU or ShapeIoU or mpdiou or WIoU or PIoU or PIoU2 or FoCIoU:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU or EIoU or SIoU or mpdiou or WIoU or ShapeIoU or PIoU or PIoU2: #注意
-                                                                         # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        
+        if CIoU or DIoU or EIoU or SIoU or mpdiou or WIoU or ShapeIoU or PIoU or PIoU2 or FoCIoU:
             c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist ** 2
-            if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+            
+            if CIoU or FoCIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 v = (4 / math.pi ** 2) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
                 with torch.no_grad():
                     alpha = v / (v - iou + (1 + eps))
-                return iou - (rho2 / c2 + v * alpha)  # CIoU
+                ciou = iou - (rho2 / c2 + v * alpha)
+                if FoCIoU:
+                    # FoCIoU: beta is set to 2 in the paper.
+                    # d and u act as m and n constraints respectively.
+                    beta = 2.0
+                    iou_mf = ((iou - d) / (u - d + eps)).clamp(0, 1).pow(beta)
+                    # Returning ciou - iou + iou_mf ensures that:
+                    # loss = 1 - returned = 1 - CIoU + IoU - IoUMF
+                    return ciou - iou + iou_mf
+                return ciou  # CIoU
+                
             elif EIoU:
                 rho_w2 = ((b2_x2 - b2_x1) - (b1_x2 - b1_x1)) ** 2
                 rho_h2 = ((b2_y2 - b2_y1) - (b1_y2 - b1_y1)) ** 2
                 cw2 = cw ** 2 + eps
                 ch2 = ch ** 2 + eps
                 return iou - (rho2 / c2 + rho_w2 / cw2 + rho_h2 / ch2)  # EIoU
+                
             elif SIoU:
-                # SIoU Loss https://arxiv.org/pdf/2205.12740.pdf
                 s_cw = (b2_x1 + b2_x2 - b1_x1 - b1_x2) * 0.5 + eps
                 s_ch = (b2_y1 + b2_y2 - b1_y1 - b1_y2) * 0.5 + eps
                 sigma = torch.pow(s_cw ** 2 + s_ch ** 2, 0.5)
@@ -214,7 +249,6 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
                 return iou - 0.5 * (distance_cost + shape_cost) + eps  # SIoU
             
             elif ShapeIoU:
-                # Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance
                 ww = 2 * torch.pow(w2, scale) / (torch.pow(w2, scale) + torch.pow(h2, scale))
                 hh = 2 * torch.pow(h2, scale) / (torch.pow(w2, scale) + torch.pow(h2, scale))
                 cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex width
@@ -225,11 +259,9 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
                 center_distance = hh * center_distance_x + ww * center_distance_y
                 distance = center_distance / c2
 
-                # Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape
                 omiga_w = hh * torch.abs(w1 - w2) / torch.max(w1, w2)
                 omiga_h = ww * torch.abs(h1 - h2) / torch.max(h1, h2)
                 shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
-                # print('shapeiou')
                 return iou - distance - 0.5 * shape_cost
             
             elif mpdiou:
@@ -240,7 +272,6 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
             elif WIoU:
                 self = WIoU_Scale(1 - iou)
                 dist = getattr(WIoU_Scale, '_scaled_loss')(self)
-                # print('WIoU')
                 return iou * dist  # WIoU https://arxiv.org/abs/2301.10051
             
             elif PIoU or PIoU2:
@@ -258,9 +289,162 @@ def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=Fal
                     return 1 - 3 * x * torch.exp(-x ** 2) * L_v1
                 
             return iou - rho2 / c2  # DIoU
+            
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
+        
     return iou  # IoU
+
+# ############################################################################################################################
+# def bbox_iou(box1, box2, xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=False, SIoU=False, WIoU=False,
+#              ShapeIoU=False, PIoU=False, PIoU2=False,
+#              hw=1, mpdiou=False, Inner=False, Focaleriou=False, d=0.00, u=0.95, ratio=1.15, eps=1e-7, Lambda=1.3, scale=0.0):
+# ############################################################################################################################
+#     """
+#     Calculate Intersection over Union (IoU) of box1(1, 4) to box2(n, 4).
+#     Args:
+#         box1 (torch.Tensor): A tensor representing a single bounding box with shape (1, 4).
+#         box2 (torch.Tensor): A tensor representing n bounding boxes with shape (n, 4).
+#         xywh (bool, optional): If True, input boxes are in (x, y, w, h) format. If False, input boxes are in
+#                                (x1, y1, x2, y2) format. Defaults to True.
+#         GIoU (bool, optional): If True, calculate Generalized IoU. Defaults to False.
+#         DIoU (bool, optional): If True, calculate Distance IoU. Defaults to False.
+#         CIoU (bool, optional): If True, calculate Complete IoU. Defaults to False.
+#         EIoU (bool, optional): If True, calculate Efficient IoU. Defaults to False.
+#         SIoU (bool, optional): If True, calculate Scylla IoU. Defaults to False.
+#         WIoU (bool, optional): If True, calculate WIoU. Defaults to False.
+#         ShapeIoU (bool, optional): If True, calculate ShapeIoU. Defaults to False.
+#         mpdiou (bool, optional): If True, calculate mpdiou. Defaults to False.
+#         PIoU (bool, optional): If True, calculate PIoU. Defaults to False.
+#         eps (float, optional): A small value to avoid division by zero. Defaults to 1e-7.
+#     Returns:
+#         (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
+#     """
+#     if Inner:
+#         if not xywh:
+#             box1, box2 = xyxy2xywh(box1), xyxy2xywh(box2)
+#         (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+#         b1_x1, b1_x2, b1_y1, b1_y2 = x1 - (w1 * ratio) / 2, x1 + (w1 * ratio) / 2, y1 - (h1 * ratio) / 2, y1 + (
+#                 h1 * ratio) / 2
+#         b2_x1, b2_x2, b2_y1, b2_y2 = x2 - (w2 * ratio) / 2, x2 + (w2 * ratio) / 2, y2 - (h2 * ratio) / 2, y2 + (
+#                 h2 * ratio) / 2
+
+#         # Intersection area
+#         inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * \
+#                 (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp_(0)
+
+#         # Union Area
+#         union = w1 * h1 * ratio * ratio + w2 * h2 * ratio * ratio - inter + eps
+#         # print('inner')
+#     # Get the coordinates of bounding boxes
+#     else:
+#         if xywh:  # transform from xywh to xyxy
+#             (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+#             w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+#             b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+#             b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+#         else:  # x1, y1, x2, y2 = box1
+#             b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+#             b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+#             w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+#             w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+#         # Intersection area
+#         inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * \
+#                 (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp_(0)
+#         # Union Area
+#         union = w1 * h1 + w2 * h2 - inter + eps
+#         # IoU
+#     iou = inter / union
+    
+#     if Focaleriou:
+#         iou = ((iou - d) / (u - d)).clamp(0, 1)  # default d=0.00,u=0.95
+
+#     if CIoU or DIoU or GIoU or EIoU or SIoU or ShapeIoU or mpdiou or WIoU or PIoU or PIoU2:
+#         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
+#         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
+#         if CIoU or DIoU or EIoU or SIoU or mpdiou or WIoU or ShapeIoU or PIoU or PIoU2: #注意
+#                                                                          # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+#             c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
+#             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist ** 2
+#             if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+#                 v = (4 / math.pi ** 2) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
+#                 with torch.no_grad():
+#                     alpha = v / (v - iou + (1 + eps))
+#                 return iou - (rho2 / c2 + v * alpha)  # CIoU
+#             elif EIoU:
+#                 rho_w2 = ((b2_x2 - b2_x1) - (b1_x2 - b1_x1)) ** 2
+#                 rho_h2 = ((b2_y2 - b2_y1) - (b1_y2 - b1_y1)) ** 2
+#                 cw2 = cw ** 2 + eps
+#                 ch2 = ch ** 2 + eps
+#                 return iou - (rho2 / c2 + rho_w2 / cw2 + rho_h2 / ch2)  # EIoU
+#             elif SIoU:
+#                 # SIoU Loss https://arxiv.org/pdf/2205.12740.pdf
+#                 s_cw = (b2_x1 + b2_x2 - b1_x1 - b1_x2) * 0.5 + eps
+#                 s_ch = (b2_y1 + b2_y2 - b1_y1 - b1_y2) * 0.5 + eps
+#                 sigma = torch.pow(s_cw ** 2 + s_ch ** 2, 0.5)
+#                 sin_alpha_1 = torch.abs(s_cw) / sigma
+#                 sin_alpha_2 = torch.abs(s_ch) / sigma
+#                 threshold = pow(2, 0.5) / 2
+#                 sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
+#                 angle_cost = torch.cos(torch.arcsin(sin_alpha) * 2 - math.pi / 2)
+#                 rho_x = (s_cw / cw) ** 2
+#                 rho_y = (s_ch / ch) ** 2
+#                 gamma = angle_cost - 2
+#                 distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
+#                 omiga_w = torch.abs(w1 - w2) / torch.max(w1, w2)
+#                 omiga_h = torch.abs(h1 - h2) / torch.max(h1, h2)
+#                 shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
+#                 return iou - 0.5 * (distance_cost + shape_cost) + eps  # SIoU
+            
+#             elif ShapeIoU:
+#                 # Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance    #Shape-Distance
+#                 ww = 2 * torch.pow(w2, scale) / (torch.pow(w2, scale) + torch.pow(h2, scale))
+#                 hh = 2 * torch.pow(h2, scale) / (torch.pow(w2, scale) + torch.pow(h2, scale))
+#                 cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex width
+#                 ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
+#                 c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
+#                 center_distance_x = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2) / 4
+#                 center_distance_y = ((b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4
+#                 center_distance = hh * center_distance_x + ww * center_distance_y
+#                 distance = center_distance / c2
+
+#                 # Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape    #Shape-Shape
+#                 omiga_w = hh * torch.abs(w1 - w2) / torch.max(w1, w2)
+#                 omiga_h = ww * torch.abs(h1 - h2) / torch.max(h1, h2)
+#                 shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
+#                 # print('shapeiou')
+#                 return iou - distance - 0.5 * shape_cost
+            
+#             elif mpdiou:
+#                 d1 = (b2_x1 - b1_x1) ** 2 + (b2_y1 - b1_y1) ** 2
+#                 d2 = (b2_x2 - b1_x2) ** 2 + (b2_y2 - b1_y2) ** 2
+#                 return iou - d1 / hw.unsqueeze(1) - d2 / hw.unsqueeze(1)  # MPDIoU
+            
+#             elif WIoU:
+#                 self = WIoU_Scale(1 - iou)
+#                 dist = getattr(WIoU_Scale, '_scaled_loss')(self)
+#                 # print('WIoU')
+#                 return iou * dist  # WIoU https://arxiv.org/abs/2301.10051
+            
+#             elif PIoU or PIoU2:
+#                 dw1 = torch.abs(b1_x2.minimum(b1_x1) - b2_x2.minimum(b2_x1))
+#                 dw2 = torch.abs(b1_x2.maximum(b1_x1) - b2_x2.maximum(b2_x1))
+#                 dh1 = torch.abs(b1_y2.minimum(b1_y1) - b2_y2.minimum(b2_y1))
+#                 dh2 = torch.abs(b1_y2.maximum(b1_y1) - b2_y2.maximum(b2_y1))
+#                 P = ((dw1 + dw2) / torch.abs(w2) + (dh1 + dh2) / torch.abs(h2)) / 4
+#                 L_v1 = 1 - iou - torch.exp(-P ** 2) + 1
+#                 if PIoU:
+#                     return 1 - L_v1
+#                 if PIoU2:
+#                     q = torch.exp(-P)
+#                     x = q * Lambda
+#                     return 1 - 3 * x * torch.exp(-x ** 2) * L_v1
+                
+#             return iou - rho2 / c2  # DIoU
+#         c_area = cw * ch + eps  # convex area
+#         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
+#     return iou  # IoU
 
 
 # def bbox_iou(
@@ -511,7 +695,11 @@ class ConfusionMatrix(DataExportMixin):
         """
         self.task = task
         self.nc = len(names)  # number of classes
-        self.matrix = np.zeros((self.nc, self.nc)) if self.task == "classify" else np.zeros((self.nc + 1, self.nc + 1))
+        self.matrix = (
+            np.zeros((self.nc, self.nc))
+            if self.task in {"classify", "semantic"}
+            else np.zeros((self.nc + 1, self.nc + 1))
+        )
         self.names = names  # name of classes
         self.matches = {} if save_matches else None
 
@@ -781,7 +969,11 @@ class ConfusionMatrix(DataExportMixin):
         """
         import re
 
-        names = list(self.names.values()) if self.task == "classify" else [*list(self.names.values()), "background"]
+        names = (
+            list(self.names.values())
+            if self.task in {"classify", "semantic"}
+            else [*list(self.names.values()), "background"]
+        )
         clean_names, seen = [], set()
         for name in names:
             clean_name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
@@ -1747,3 +1939,227 @@ class OBBMetrics(DetMetrics):
         DetMetrics.__init__(self, names)
         # TODO: probably remove task as well
         self.task = "obb"
+        
+        
+class SemanticMetrics(SimpleClass, DataExportMixin):
+    """Metrics for semantic segmentation, including mIoU, pixel accuracy, and per-class IoU.
+
+    Attributes:
+        names (dict): Class names mapping.
+        nc (int): Number of classes.
+        cm_nc (int): Confusion matrix side length (2 for binary segmentation, else nc).
+        device (torch.device | None): Device used for confusion matrix accumulation.
+        matrix (torch.Tensor | None): Accumulated confusion matrix of shape (cm_nc, cm_nc).
+        speed (dict): Processing speed statistics.
+        nt_per_image (np.ndarray): Number of images containing each class.
+        nt_per_class (np.ndarray): Number of pixels per class.
+        _miou (float): Cached mean IoU.
+        _pixel_accuracy (float): Cached pixel accuracy.
+        _per_class_iou (np.ndarray): Cached per-class IoU values.
+        _per_class_pixel_acc (np.ndarray): Cached per-class pixel accuracy.
+    """
+
+    def __init__(self, names: dict[int, str] | None = None) -> None:
+        """Initialize semantic segmentation metrics.
+
+        Args:
+            names (dict, optional): Dictionary mapping class indices to names.
+        """
+        self.names = names or {}
+        self.nc = len(self.names)
+        self.cm_nc = 2 if self.nc == 1 else self.nc
+        self.matrix = None
+        self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
+        self.nt_per_image = np.zeros(self.nc, dtype=np.int32)
+        self._miou = 0.0
+        self._pixel_accuracy = 0.0
+        self._per_class_iou = np.zeros(self.nc, dtype=np.float32)
+        self._per_class_pixel_acc = np.zeros(self.nc, dtype=np.float32)
+        self.nt_per_class = np.zeros(self.nc, dtype=np.int32)
+        self.task = "semantic"
+
+    def update_stats(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        """Accumulate confusion matrix from predictions and targets.
+
+        Args:
+            preds (torch.Tensor): Predicted class IDs [B, H, W].
+            targets (torch.Tensor): Ground truth class IDs [B, H, W].
+        """
+        if self.matrix is None:
+            self.matrix = torch.zeros((self.cm_nc, self.cm_nc), device=preds.device, dtype=torch.float32)
+
+        valid = (targets != 255) & (preds >= 0) & (preds < self.cm_nc) & (targets >= 0) & (targets < self.cm_nc)
+        hist = torch.bincount(self.cm_nc * targets[valid] + preds[valid], minlength=self.cm_nc**2).reshape(
+            self.cm_nc, self.cm_nc
+        )
+        self.matrix += hist.to(self.matrix.dtype)
+
+        present = torch.zeros((targets.shape[0], self.cm_nc), dtype=torch.bool, device=targets.device)
+        batch_idx = torch.arange(targets.shape[0], device=targets.device).view(-1, 1, 1).expand_as(targets)
+        present[batch_idx[valid], targets[valid].long()] = True
+        if self.nc == 1:
+            self.nt_per_image[0] += int(present[:, 1].sum())
+        else:
+            self.nt_per_image += present[:, : self.nc].sum(0).cpu().numpy()
+
+    def process(self, save_dir: Path = Path("."), plot: bool = False, on_plot: callable | None = None) -> None:
+        """Compute final metrics from accumulated confusion matrix.
+
+        Args:
+            save_dir (Path): Directory to save plots. Defaults to Path('.').
+            plot (bool): Whether to plot IoU bars and confusion matrix. Defaults to False.
+            on_plot (callable, optional): Function to call after plots are generated. Defaults to None.
+        """
+        if self.matrix is None:
+            return
+
+        intersection = torch.diagonal(self.matrix)
+        union = self.matrix.sum(1) + self.matrix.sum(0) - intersection
+        iou = torch.where(union > 0, intersection / union, torch.tensor(float("nan"), device=union.device))
+        row_sum = self.matrix.sum(1)
+        pa = intersection / (row_sum + 1e-10)
+
+        if self.nc == 1:
+            self._miou = float(iou[1].item())
+            self._per_class_iou = iou[1:].cpu().numpy()
+            self._per_class_pixel_acc = pa[1:].cpu().numpy()
+            self.nt_per_class = np.array([row_sum[1].item()], dtype=np.int32)
+        else:
+            self._miou = float(iou[~torch.isnan(iou)].mean().item())
+            self._per_class_iou = iou.cpu().numpy()
+            self._per_class_pixel_acc = pa.cpu().numpy()
+            self.nt_per_class = row_sum[: self.nc].cpu().numpy().astype(np.int32)
+
+        self._pixel_accuracy = float((intersection.sum() / (self.matrix.sum() + 1e-10)).item())
+
+        if plot:
+            self._plot_iou_bars(save_dir, on_plot)
+
+    def clear_stats(self):
+        """Clear accumulated statistics."""
+        self.matrix = None
+        self.nt_per_image.fill(0)
+
+    @plt_settings()
+    def _plot_iou_bars(self, save_dir, on_plot):
+        """Plot per-class IoU bar chart.
+
+        Args:
+            save_dir (Path | str): Directory to save the plot.
+            on_plot (callable, optional): Function to call after plot is saved.
+        """
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6), tight_layout=True)
+        names = list(self.names.values()) if self.names else [str(i) for i in range(self.nc)]
+        x = np.arange(self.nc)
+        bars = ax.bar(x, self._per_class_iou, color=[list(c / 255.0 for c in colors(i, False)) for i in range(self.nc)])
+        ax.set_xlabel("Class")
+        ax.set_ylabel("IoU")
+        ax.set_title("Per-Class IoU")
+        ax.set_ylim(0, 1)
+        if 0 < len(names) < 30:
+            ax.set_xticks(x)
+            ax.set_xticklabels(names, rotation=90, fontsize=10)
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width() / 2.0, height, f"{height:.3f}", ha="center", va="bottom", fontsize=8)
+        fname = Path(save_dir) / "iou_bar_chart.png"
+        plt.savefig(fname, dpi=250)
+        plt.close(fig)
+        if on_plot:
+            on_plot(fname)
+
+    @property
+    def miou(self):
+        """Return mean IoU (foreground IoU only for binary segmentation)."""
+        return self._miou
+
+    @property
+    def pixel_accuracy(self):
+        """Return overall pixel accuracy."""
+        return self._pixel_accuracy
+
+    @property
+    def per_class_iou(self):
+        """Return per-class IoU values (foreground IoU only for binary segmentation)."""
+        return self._per_class_iou
+
+    @property
+    def per_class_pixel_accuracy(self):
+        """Return per-class pixel accuracy (diagonal / row sum for each class)."""
+        return self._per_class_pixel_acc
+
+    @property
+    def fitness(self):
+        """Return model fitness as mean IoU."""
+        return self.miou
+
+    @property
+    def keys(self):
+        """Return metric keys for logging."""
+        return ["metrics/mIoU", "metrics/pixel_acc"]
+
+    def mean_results(self):
+        """Return mean results for logging."""
+        return [self.miou, self.pixel_accuracy]
+
+    def class_result(self, i: int) -> list[float]:
+        """Return the result of evaluating the performance on a specific class.
+
+        Args:
+            i (int): Class index.
+
+        Returns:
+            (list): [IoU, pixel_accuracy] for the specified class.
+        """
+        if self._per_class_iou is None or len(self._per_class_iou) == 0:
+            return [0.0, 0.0]
+        return [float(self._per_class_iou[i]), float(self._per_class_pixel_acc[i])]
+
+    @property
+    def ap_class_index(self):
+        """Return the class index list for per-class results."""
+        return list(range(self.nc))
+
+    @property
+    def results_dict(self):
+        """Return results dictionary."""
+        return dict(zip([*self.keys, "fitness"], [*self.mean_results(), self.fitness]))
+
+    @property
+    def curves(self):
+        """Return an empty list because semantic segmentation has no PR curves."""
+        return []
+
+    @property
+    def curves_results(self):
+        """Return empty list (no PR curve results)."""
+        return []
+
+    def summary(self, normalize: bool = True, decimals: int = 5) -> list[dict]:
+        """Generate a per-class summary of semantic segmentation metrics, with global mIoU and pixel accuracy on each
+        row.
+
+        Args:
+            normalize (bool): For semantic metrics, values are already in [0, 1].
+            decimals (int): Number of decimal places to round the metric values to.
+
+        Returns:
+            (list[dict]): A list of dictionaries, one per class, with per-class IoU and shared scalars.
+        """
+        miou = round(self.miou, decimals)
+        pixel_acc = round(self.pixel_accuracy, decimals)
+        per_class = self.per_class_iou
+        names = self.names or {i: str(i) for i in range(len(per_class))}
+        return [
+            {
+                "Class": names.get(i, str(i)),
+                "Images": int(self.nt_per_image[i]),
+                "Pixels": int(self.nt_per_class[i]),
+                "IoU": round(float(per_class[i]), decimals),
+                "mIoU": miou,
+                "pixel_acc": pixel_acc,
+            }
+            for i in range(len(per_class))
+        ]

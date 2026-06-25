@@ -46,6 +46,7 @@ from ultralytics.nn.modules import (
     OBB26,
     Pose26,
     Segment26,
+    SemanticSegment,
     YOLOESegment26,
     RTMOPose,
     RLEPose,
@@ -1024,6 +1025,30 @@ from ultralytics.nn.modules import (
     cpubone_b3, 
     cpubone_b4, 
     cpubone_b5,
+    cpubone_nano_blockattnres, 
+    cpubone_t0_blockattnres, 
+    cpubone_s0_blockattnres, 
+    cpubone_s1_blockattnres, 
+    cpubone_b0_blockattnres, 
+    cpubone_b1_blockattnres, 
+    cpubone_b15_blockattnres, 
+    cpubone_b2_blockattnres, 
+    cpubone_b25_blockattnres, 
+    cpubone_b3_blockattnres, 
+    cpubone_b4_blockattnres, 
+    cpubone_b5_blockattnres,
+    cpubone_nano_fullattnres, 
+    cpubone_t0_fullattnres, 
+    cpubone_s0_fullattnres, 
+    cpubone_s1_fullattnres, 
+    cpubone_b0_fullattnres, 
+    cpubone_b1_fullattnres, 
+    cpubone_b15_fullattnres, 
+    cpubone_b2_fullattnres, 
+    cpubone_b25_fullattnres, 
+    cpubone_b3_fullattnres, 
+    cpubone_b4_fullattnres, 
+    cpubone_b5_fullattnres,
     tinyvim_s, 
     tinyvim_b, 
     tinyvim_l,
@@ -1061,6 +1086,11 @@ from ultralytics.nn.modules import (
     defm_tiny, 
     defm_small, 
     defm_base,
+    a2mamba_n, 
+    a2mamba_t, 
+    a2mamba_s, 
+    a2mamba_b, 
+    a2mamba_l,
     VanillaNet,
     UniRepLKNet,
     OverLoCK,
@@ -1145,6 +1175,9 @@ from ultralytics.nn.modules import (
     AttnResPose,
     BlockAttnResMerge,
     C2f_FullAttnRes,
+    D3Block,
+    D3C2f,
+    RepDown,
     
     PatchEmbed_Faster, 
     PatchMerging_Faster,
@@ -1188,6 +1221,7 @@ from ultralytics.utils.loss import (
     PoseLoss26,
     RTMOPoseLoss,
     RLEPoseLoss,
+    SemanticSegmentationLoss,
     v8ClassificationLoss,
     v8DetectionLoss,
     v8OBBLoss,
@@ -1540,6 +1574,25 @@ class BaseModel(torch.nn.Module):
     def init_criterion(self):
         """Initialize the loss criterion for the BaseModel."""
         raise NotImplementedError("compute_loss() needs to be implemented by task heads")
+    
+    
+def _initialize_yolo_model(model, cfg, ch, nc, verbose):
+    """Initialize common YOLO model attributes from a YAML config."""
+    model.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
+    if model.yaml["backbone"][0][2] == "Silence":
+        LOGGER.warning(
+            "YOLOv9 `Silence` module is deprecated in favor of torch.nn.Identity. "
+            "Please delete local *.pt file and re-download the latest model checkpoint."
+        )
+        model.yaml["backbone"][0][2] = "nn.Identity"
+
+    model.yaml["channels"] = ch  # save channels
+    if nc and nc != model.yaml["nc"]:
+        LOGGER.info(f"Overriding model.yaml nc={model.yaml['nc']} with nc={nc}")
+        model.yaml["nc"] = nc  # override YAML value
+    model.model, model.save = parse_model(deepcopy(model.yaml), ch=ch, verbose=verbose)  # model, savelist
+    model.names = {i: f"{i}" for i in range(model.yaml["nc"])}  # default names dict
+    model.inplace = model.yaml.get("inplace", True)
 
 
 class DetectionModel(BaseModel):
@@ -1580,22 +1633,7 @@ class DetectionModel(BaseModel):
             verbose (bool): Whether to display model information.
         """
         super().__init__()
-        self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
-        if self.yaml["backbone"][0][2] == "Silence":
-            LOGGER.warning(
-                "YOLOv9 `Silence` module is deprecated in favor of torch.nn.Identity. "
-                "Please delete local *.pt file and re-download the latest model checkpoint."
-            )
-            self.yaml["backbone"][0][2] = "nn.Identity"
-
-        # Define model
-        self.yaml["channels"] = ch  # save channels
-        if nc and nc != self.yaml["nc"]:
-            LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
-            self.yaml["nc"] = nc  # override YAML value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
-        self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
-        self.inplace = self.yaml.get("inplace", True)
+        _initialize_yolo_model(self, cfg, ch, nc, verbose)
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -1761,6 +1799,78 @@ class SegmentationModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the SegmentationModel."""
         return E2ELoss(self, v8SegmentationLoss) if getattr(self, "end2end", False) else v8SegmentationLoss(self)
+    
+    
+class SemanticSegmentationModel(BaseModel):
+    """YOLO semantic segmentation model.
+
+    This class implements a semantic segmentation model that produces per-pixel class predictions. Unlike
+    SegmentationModel (instance segmentation), this does not produce bounding boxes.
+
+    Methods:
+        __init__: Initialize the semantic segmentation model.
+        init_criterion: Initialize the loss criterion for semantic segmentation.
+
+    Examples:
+        Initialize a semantic segmentation model
+        >>> model = SemanticSegmentationModel("yolo26n-sem.yaml", ch=3, nc=19)
+    """
+
+    def __init__(self, cfg="yolo26n-sem.yaml", ch=3, nc=None, verbose=True):
+        """Initialize the YOLO semantic segmentation model.
+
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes.
+            verbose (bool): Whether to display model information.
+        """
+        super().__init__()
+        _initialize_yolo_model(self, cfg, ch, nc, verbose)
+
+        # Build strides: track smallest spatial size across all layers to find the deepest
+        # backbone stride (e.g. P5/32). Head input alone is insufficient: the FPN upsamples
+        # P5 away before the head, but the encoder still requires inputs aligned to that
+        # deepest stride or FPN concats fail on rounding mismatches.
+        m = self.model[-1]
+        if isinstance(m, SemanticSegment):
+            s = 256
+            self.model.eval()
+            m.training = True  # get training output (stride-4)
+            min_h = [s]
+
+            def _record(_m, _inp, out, _h=min_h):
+                if isinstance(out, torch.Tensor) and out.ndim == 4:
+                    _h[0] = min(_h[0], out.shape[-2])
+
+            hooks = [layer.register_forward_hook(_record) for layer in self.model]
+            try:
+                self.forward(torch.zeros(1, ch, s, s))
+            finally:
+                for h in hooks:
+                    h.remove()
+            m.stride = torch.tensor([s / min_h[0]], dtype=torch.float32)  # e.g., 256/8 = 32
+            self.stride = m.stride
+            self.model.train()
+        else:
+            self.stride = torch.Tensor([32])
+
+        initialize_weights(self)
+        if verbose:
+            self.info()
+            LOGGER.info("")
+
+    def init_criterion(self):
+        """Initialize the loss criterion for semantic segmentation."""
+        return SemanticSegmentationLoss(self)
+
+    def _apply(self, fn):
+        """Apply a function to all tensors in the model."""
+        self = super()._apply(fn)
+        m = self.model[-1]
+        if isinstance(m, SemanticSegment):
+            m.stride = fn(m.stride)
+        return self
 
 
 class PoseModel(DetectionModel):
@@ -3107,6 +3217,9 @@ def parse_model(d, ch, verbose=True):
             ViT5Block,
             FdamBlock,
             C2f_FullAttnRes,
+            D3Block,
+            D3C2f,
+            RepDown,
             
             PatchEmbed_Faster, 
             PatchMerging_Faster,
@@ -3298,6 +3411,7 @@ def parse_model(d, ch, verbose=True):
             C2f_Strip,
             ViT5Block,
             C2f_FullAttnRes,
+            D3C2f,
             
             ParCBlock,
             vHeatStage,
@@ -3512,6 +3626,8 @@ def parse_model(d, ch, verbose=True):
                      OBB, MAFOBB, IOBB, OBB26,
                      AttnResDetect, AttnResSegment, AttnResOBB, AttnResPose}:
                 m.legacy = legacy
+        elif m is SemanticSegment:
+            args.append([ch[x] for x in f])  # nc, ch tuple
         elif m is v10Detect:
             args.append([ch[x] for x in f])
         elif m is ImagePoolingAttn:
@@ -3634,7 +3750,11 @@ def parse_model(d, ch, verbose=True):
                    SwinTransformer_RoPE_Small, SwinTransformer_RoPE_Base, SwinTransformer_RoPE_Large, SwinTransformer_ViT5_Tiny, SwinTransformer_ViT5_Small, SwinTransformer_ViT5_Base, SwinTransformer_ViT5_Large,
                    efficientMod_xxs, efficientMod_xs, efficientMod_s, efficientMod_s_Conv, repnext_m0, repnext_m1, repnext_m2, repnext_m3, repnext_m4, repnext_m5, repnext_attnres_m0, repnext_attnres_m1, 
                    repnext_attnres_m2, repnext_attnres_m3, repnext_attnres_m4, repnext_attnres_m5, h_vittt_tiny, h_vittt_small, h_vittt_base, microvit_1, microvit_2, microvit_3, microvitv2_1, microvitv2_2, 
-                   microvitv2_2_mdta, microvitv2_3, cpubone_nano, cpubone_t0, cpubone_s0, cpubone_s1, cpubone_b0, cpubone_b1, cpubone_b15, cpubone_b2, cpubone_b25, cpubone_b3, cpubone_b4, cpubone_b5}:
+                   microvitv2_2_mdta, microvitv2_3, cpubone_nano, cpubone_t0, cpubone_s0, cpubone_s1, cpubone_b0, cpubone_b1, cpubone_b15, cpubone_b2, cpubone_b25, cpubone_b3, cpubone_b4, cpubone_b5,
+                   cpubone_nano_blockattnres, cpubone_t0_blockattnres, cpubone_s0_blockattnres, cpubone_s1_blockattnres, cpubone_b0_blockattnres, cpubone_b1_blockattnres, cpubone_b15_blockattnres, 
+                   cpubone_b2_blockattnres, cpubone_b25_blockattnres, cpubone_b3_blockattnres, cpubone_b4_blockattnres, cpubone_b5_blockattnres, cpubone_nano_fullattnres, cpubone_t0_fullattnres, 
+                   cpubone_s0_fullattnres, cpubone_s1_fullattnres, cpubone_b0_fullattnres, cpubone_b1_fullattnres, cpubone_b15_fullattnres, cpubone_b2_fullattnres, cpubone_b25_fullattnres, 
+                   cpubone_b3_fullattnres, cpubone_b4_fullattnres, cpubone_b5_fullattnres, a2mamba_n, a2mamba_t, a2mamba_s, a2mamba_b, a2mamba_l}:
             m = m(*args)
             c2 = m.width_list 
             backbone = True
@@ -3743,7 +3863,7 @@ def guess_model_task(model):
         model (torch.nn.Module | dict): PyTorch model or model configuration in YAML format.
 
     Returns:
-        (str): Task of the model ('detect', 'segment', 'classify', 'pose', 'obb').
+        (str): Task of the model ('detect', 'segment', 'classify', 'pose', 'obb', 'semantic').
     """
 
     def cfg2task(cfg):
@@ -3753,6 +3873,8 @@ def guess_model_task(model):
             return "classify"
         if "detect" in m:
             return "detect"
+        if "semanticsegment" in m:
+            return "semantic"
         if "segment" in m:
             return "segment"
         if "pose" in m:
@@ -3773,6 +3895,8 @@ def guess_model_task(model):
             with contextlib.suppress(Exception):
                 return cfg2task(eval(x))  # nosec B307: safe eval of known attribute paths
         for m in model.modules():
+            if isinstance(m, SemanticSegment):
+                return "semantic"
             if isinstance(m, (Segment, MAFSegment, ISegment, YOLOESegment, AttnResSegment)):
                 return "segment"
             elif isinstance(m, Classify):
@@ -3787,6 +3911,8 @@ def guess_model_task(model):
     # Guess from model filename
     if isinstance(model, (str, Path)):
         model = Path(model)
+        if "-sem" in model.stem or "semantic" in model.parts:
+            return "semantic"
         if "-seg" in model.stem or "segment" in model.parts:
             return "segment"
         elif "-cls" in model.stem or "classify" in model.parts:

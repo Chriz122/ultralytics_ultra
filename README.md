@@ -4,13 +4,14 @@
 
 支援版本
 - 建議: `ultralytics==8.4.6`
--- 安裝補充相依套件（擇一）：
+-- 安裝補充相依套件：
   ```powershell
-  # 選項 A：安裝專案附帶的 wheel
-  pip install Install_Dependencies\ultralytics-8.4.6.17.122-py3-none-any.whl
+  # 安裝專案附帶的 wheel
+  pip install Install_Dependencies\ultralytics-8.4.6.18.127-py3-none-any.whl
+  # A2Mamba 依賴
+  pip install Install_Dependencies\selective_scan_rh-0.0.0-cp311-cp311-linux_x86_64.whl
+  https://github.com/SHI-Labs/NATTEN/releases/download/v0.21.1/natten-0.21.1+torch280cu128-cp311-cp311-linux_x86_64.
 
-  # 選項 B：使用本專案的 requirements 清單安裝所有相依套件
-  pip install -r Install_Dependencies\requirement.txt
   ```
   
   > [!IMPORTANT]

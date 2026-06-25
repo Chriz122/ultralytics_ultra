@@ -75,11 +75,11 @@ import torch
 
 from ultralytics import __version__
 from ultralytics.cfg import TASK2DATA, get_cfg
-from ultralytics.data import build_dataloader
+from ultralytics.data import build_dataloader, build_yolo_dataset
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
 from ultralytics.nn.autobackend import check_class_names, default_class_names
-from ultralytics.nn.modules import C2f, Classify, Detect, RTDETRDecoder
+from ultralytics.nn.modules import C2f, Classify, Detect, RTDETRDecoder, Segment26, SemanticSegment
 from ultralytics.nn.tasks import ClassificationModel, DetectionModel, SegmentationModel, WorldModel
 from ultralytics.utils import (
     ARM64,
@@ -427,6 +427,9 @@ class Exporter:
             assert self.args.name in RKNN_CHIPS, (
                 f"Invalid processor name '{self.args.name}' for Rockchip RKNN export. Valid names are {RKNN_CHIPS}."
             )
+        if self.args.nms and model.task == "semantic":
+            LOGGER.warning("'nms=True' is not valid for semantic segmentation models. Forcing 'nms=False'.")
+            self.args.nms = False
         if self.args.nms:
             assert not isinstance(model, ClassificationModel), "'nms=True' is not valid for classification models."
             assert not tflite or not ARM64 or not LINUX, "TFLite export with NMS unsupported on ARM64 Linux"
@@ -500,8 +503,9 @@ class Exporter:
 
             model = tf_wrapper(model)
         for m in model.modules():
-            if isinstance(m, Classify):
+            if isinstance(m, (Classify, SemanticSegment)):
                 m.export = True
+                m.format = self.args.format
             if isinstance(m, (Detect, RTDETRDecoder)):  # includes all Detect subclasses like Segment, Pose, OBB
                 m.dynamic = self.args.dynamic
                 m.export = True
@@ -630,15 +634,36 @@ class Exporter:
         """Build and return a dataloader for calibration of INT8 models."""
         LOGGER.info(f"{prefix} collecting INT8 calibration images from 'data={self.args.data}'")
         data = (check_cls_dataset if self.model.task == "classify" else check_det_dataset)(self.args.data)
-        dataset = YOLODataset(
-            data[self.args.split or "val"],
-            data=data,
-            fraction=self.args.fraction,
-            task=self.model.task,
-            imgsz=self.imgsz[0],
-            augment=False,
-            batch_size=self.args.batch,
-        )
+        # dataset = YOLODataset(
+        #     data[self.args.split or "val"],
+        #     data=data,
+        #     fraction=self.args.fraction,
+        #     task=self.model.task,
+        #     imgsz=self.imgsz[0],
+        #     augment=False,
+        #     batch_size=self.args.batch,
+        # )
+        if self.model.task == "classify":
+            dataset = YOLODataset(
+                data[self.args.split or "val"],
+                data=data,
+                fraction=self.args.fraction,
+                task=self.model.task,
+                imgsz=max(self.imgsz),
+                augment=False,
+                batch_size=self.args.batch,
+            )
+        else:
+            cfg = deepcopy(self.args)
+            cfg.imgsz = max(self.imgsz)
+            dataset = build_yolo_dataset(
+                cfg,
+                data[self.args.split or "val"],
+                self.args.batch,
+                data,
+                mode="val",
+                fraction=self.args.fraction,
+            )
         n = len(dataset)
         if n < self.args.batch:
             raise ValueError(

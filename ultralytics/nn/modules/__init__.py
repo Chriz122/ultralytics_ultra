@@ -216,6 +216,9 @@ from .block import (
     PST,
     StripBottleneck,
     C2f_Strip,
+    D3Block,
+    D3C2f,
+    RepDown,
 )
 from .ppyolo import (
     ResSPP,
@@ -293,6 +296,7 @@ from .head import (
     MAFSegment,
     ISegment,
     Segment26,
+    SemanticSegment,
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
@@ -508,6 +512,8 @@ from .RepNeXt import repnext_m0, repnext_m1, repnext_m2, repnext_m3, repnext_m4,
 from .RepNeXt_AttnRes import repnext_attnres_m0, repnext_attnres_m1, repnext_attnres_m2, repnext_attnres_m3, repnext_attnres_m4, repnext_attnres_m5
 from .ViTTT import h_vittt_tiny, h_vittt_small, h_vittt_base
 from .CPUBone import cpubone_nano, cpubone_t0, cpubone_s0, cpubone_s1, cpubone_b0, cpubone_b1, cpubone_b15, cpubone_b2, cpubone_b25, cpubone_b3, cpubone_b4, cpubone_b5
+from .CPUBone_AttnRes import cpubone_nano_blockattnres, cpubone_t0_blockattnres, cpubone_s0_blockattnres, cpubone_s1_blockattnres, cpubone_b0_blockattnres, cpubone_b1_blockattnres, cpubone_b15_blockattnres, cpubone_b2_blockattnres, cpubone_b25_blockattnres, cpubone_b3_blockattnres, cpubone_b4_blockattnres, cpubone_b5_blockattnres
+from .CPUBone_FullAttnRes import cpubone_nano_fullattnres, cpubone_t0_fullattnres, cpubone_s0_fullattnres, cpubone_s1_fullattnres, cpubone_b0_fullattnres, cpubone_b1_fullattnres, cpubone_b15_fullattnres, cpubone_b2_fullattnres, cpubone_b25_fullattnres, cpubone_b3_fullattnres, cpubone_b4_fullattnres, cpubone_b5_fullattnres
 # Modular ------------------------------------------------------------
 from .FasterNet_modular import PatchEmbed_Faster, PatchMerging_Faster, FasterNetLayer
 from .PartialNet_modular import Partial_PatchEmbed, Partial_Block, Partial_Downsample 
@@ -537,6 +543,7 @@ from .GroupMamba import groupmamba_tiny, groupmamba_small, groupmamba_base
 from .MobileMamba import MobileMamba_T2, MobileMamba_T4, MobileMamba_S6, MobileMamba_B1, MobileMamba_B2, MobileMamba_B4
 from .VCMamba import vcmamba_efficientformer_s, vcmamba_efficientformer_m, vcmamba_efficientformer_b
 from .DefMamba import defm_tiny, defm_small, defm_base
+from .A2Mamba import a2mamba_n, a2mamba_t, a2mamba_s, a2mamba_b, a2mamba_l
 # Mamba ----------------------------------------------
 # Deformable ----------------------------------------------
 from .FlashInternImage import flash_intern_image_t, flash_intern_image_s, flash_intern_image_b
@@ -629,6 +636,7 @@ __all__ = (
     "OBB26",
     "Pose26",
     "Segment26",
+    "SemanticSegment",
     "YOLOESegment26",
     "RTMOPose",
     "RLEPose",
@@ -1636,6 +1644,30 @@ __all__ = (
     "cpubone_b3", 
     "cpubone_b4", 
     "cpubone_b5",
+    "cpubone_nano_blockattnres", 
+    "cpubone_t0_blockattnres", 
+    "cpubone_s0_blockattnres", 
+    "cpubone_s1_blockattnres", 
+    "cpubone_b0_blockattnres", 
+    "cpubone_b1_blockattnres", 
+    "cpubone_b15_blockattnres", 
+    "cpubone_b2_blockattnres", 
+    "cpubone_b25_blockattnres", 
+    "cpubone_b3_blockattnres", 
+    "cpubone_b4_blockattnres", 
+    "cpubone_b5_blockattnres",
+    "cpubone_nano_fullattnres", 
+    "cpubone_t0_fullattnres",
+    "cpubone_s0_fullattnres", 
+    "cpubone_s1_fullattnres", 
+    "cpubone_b0_fullattnres", 
+    "cpubone_b1_fullattnres", 
+    "cpubone_b15_fullattnres", 
+    "cpubone_b2_fullattnres", 
+    "cpubone_b25_fullattnres", 
+    "cpubone_b3_fullattnres", 
+    "cpubone_b4_fullattnres", 
+    "cpubone_b5_fullattnres",
     "h_vittt_tiny", 
     "h_vittt_small", 
     "h_vittt_base",
@@ -1664,6 +1696,11 @@ __all__ = (
     "vcmamba_efficientformer_s", 
     "vcmamba_efficientformer_m", 
     "vcmamba_efficientformer_b",
+    "a2mamba_n", 
+    "a2mamba_t", 
+    "a2mamba_s", 
+    "a2mamba_b", 
+    "a2mamba_l",
     "defm_tiny", 
     "defm_small", 
     "defm_base",
@@ -1752,6 +1789,9 @@ __all__ = (
     "AttnResPose",
     "BlockAttnResMerge",
     "C2f_FullAttnRes",
+    "D3Block",
+    "D3C2f",
+    "RepDown",
     
     "PatchEmbed_Faster",
     "PatchMerging_Faster", 

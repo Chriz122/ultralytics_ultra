@@ -170,6 +170,9 @@ __all__ = (
     "DASI",
     "PST",
     "C2f_Strip",
+    "D3Block",
+    "D3C2f",
+    "RepDown",
     
     "C1",
     "C2",
@@ -3551,7 +3554,7 @@ class Proto26(Proto):
         self.feat_fuse = Conv(ch[0], c_, k=3)
         self.semseg = nn.Sequential(Conv(ch[0], c_, k=3), Conv(c_, c_, k=3), nn.Conv2d(c_, nc, 1))
 
-    def forward(self, x: torch.Tensor, return_semseg: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_semantic: bool = True) -> torch.Tensor:
         """Perform a forward pass through layers using an upsampled input image."""
         feat = x[0]
         for i, f in enumerate(self.feat_refine):
@@ -3559,9 +3562,9 @@ class Proto26(Proto):
             up_feat = F.interpolate(up_feat, size=feat.shape[2:], mode="nearest")
             feat = feat + up_feat
         p = super().forward(self.feat_fuse(feat))
-        if self.training and return_semseg:
-            semseg = self.semseg(feat)
-            return (p, semseg)
+        if self.training and return_semantic:
+            semantic = self.semseg(feat)
+            return (p, semantic)
         return p
 
     def fuse(self):
@@ -10431,3 +10434,124 @@ class PST(nn.Module):
         # Concatenate all outputs and apply final convolution
         y = self.cv2(torch.cat(y, 1))
         return y
+
+
+class D3Block(nn.Module):
+    """
+    D3 Block 依據圖(c)細節設計，用於 D3C2f 的瓶頸層。
+    圖示展開：
+    1. Conv-k1 -> DWConv-k3 (圖中標註為 DSConv k=3, g=C_)
+    2. DWConv-k7 (k=7, g=C_)
+    3. Conv-k1 -> DWConv-k3 (圖中標註為 DSConv k=3, g=Cout)
+    """
+    def __init__(self, c, shortcut=True, e=0.5):
+        """
+        初始化 D3Block
+        Args:
+            c (int): 輸入及輸出的通道數 (Cout)
+            shortcut (bool): 是否使用殘差連接
+            e (float): 中間通道數的縮放比例 (對應圖中 C_ = e * Cout)
+        """
+        super().__init__()
+        c_ = int(c * e)  # 對應圖中的 C_
+        
+        # 模塊1: 對應上方紅框 "DSConv k=3, g=C_" (圖示展開為 Conv-k1 -> DWConv)
+        self.cv1 = Conv(c, c_, 1, 1)
+        self.dw1 = DWConv(c_, c_, 3, 1)
+        
+        # 模塊2: 對應中間紅框 "DWConv k=7, g=C_"
+        self.dw2 = DWConv(c_, c_, 7, 1)
+        
+        # 模塊3: 對應下方紅框 "DSConv k=3, g=Cout" (圖示展開為 Conv-k1 -> DWConv)
+        self.cv2 = Conv(c_, c, 1, 1)
+        self.dw3 = DWConv(c, c, 3, 1)
+        
+        self.add = shortcut
+
+    def forward(self, x):
+        # Forward 通道流轉: c -> c_ -> c_ -> c_ -> c -> c
+        y = self.dw1(self.cv1(x))
+        y = self.dw2(y)
+        y = self.dw3(self.cv2(y))
+        
+        return x + y if self.add else y
+
+
+class D3C2f(nn.Module):
+    """
+    D3C2f 模塊：將標準 C2f 中的 Bottleneck 替換為 D3Block。
+    結構對齊圖(c) D3C2f。
+    """
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """
+        Args:
+            c1 (int): 輸入通道數
+            c2 (int): 輸出通道數
+            n (int): D3Block 的堆疊數量 (圖中對應 *N)
+            shortcut (bool): D3Block 是否使用殘差連接
+            g (int): Conv 分組數 (此處保留介面以相容C2f格式)
+            e (float): 通道數擴張/縮小率
+        """
+        super().__init__()
+        self.c = int(c2 * e)  # 隱藏層通道數 (Transition 之後的單支通道數)
+        
+        # 進入 transition 層，通道數轉為 2 * self.c 準備 Split
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1) 
+        
+        # 最終 Concat 之後的融合層 Conv-k1
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        
+        # D3Block 的堆疊
+        # 依照圖示 D3Block 內部指定了 e=0.5，故傳入 e=0.5
+        self.m = nn.ModuleList(D3Block(self.c, shortcut=shortcut, e=0.5) for _ in range(n))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 通過 transition 並 split (對齊圖中 Split)
+        y = list(self.cv1(x).chunk(2, 1)) 
+        
+        # 通過 N 個 D3 Block
+        y.extend(m(y[-1]) for m in self.m) 
+        
+        # 對齊圖中 Concat 後接 Conv-k1
+        return self.cv2(torch.cat(y, 1))
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """使用 split 代替 chunk 的前向傳播 (相容導出用)"""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class RepDown(nn.Module):
+    """
+    RepDown 模塊，對齊圖(c) RepDown 結構。
+    可重參數化(Re-parameterization)的下採樣模塊。
+    """
+    def __init__(self, c1, c2):
+        """
+        Args:
+            c1 (int): 輸入通道 H1xW1xCin
+            c2 (int): 輸出通道 H2xW2xCout
+        """
+        super().__init__()
+        # 首先經過 Conv-k1，通道由 Cin 轉為 Cout
+        self.cv1 = Conv(c1, c2, k=1, s=1)
+        
+        # 並行的 DWConv 結構 (為了能重參數化，分支不帶獨立激活函數，設定 act=False)
+        # s=2 代表下採樣 (stride=2)。
+        # DWConv 在您的基礎代碼中 g=math.gcd(c2, c2) 即 g=c2，自動對齊圖中的 g=Cout
+        self.dw1 = DWConv(c2, c2, k=3, s=2, act=False)  # autopad 會自動設定 p=1
+        self.dw2 = DWConv(c2, c2, k=7, s=2, act=False)  # autopad 會自動設定 p=3
+        
+        # 融合相加後的統一激活函數
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        # 1. 1x1 Conv 轉換通道
+        x = self.cv1(x)
+        # 2. 兩條並行下採樣路徑 DWConv
+        out1 = self.dw1(x)
+        out2 = self.dw2(x)
+        # 3. 相加後激活 (對應圖中 ⊕ 後出箭頭)
+        return self.act(out1 + out2)

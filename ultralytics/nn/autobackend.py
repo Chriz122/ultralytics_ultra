@@ -894,6 +894,8 @@ class AutoBackend(nn.Module):
                     y = [y[1]]
                 else:
                     y[1] = np.transpose(y[1], (0, 3, 1, 2))  # should be y = (1, 116, 8400), (1, 32, 160, 160)
+            elif self.task == "semantic" and len(y) == 1 and y[0].ndim == 4:
+                 y[0] = np.transpose(y[0], (0, 3, 1, 2))  # NHWC → NCHW for semantic segmentation logits
             y = [x if isinstance(x, np.ndarray) else x.numpy() for x in y]
 
         if isinstance(y, (list, tuple)):
